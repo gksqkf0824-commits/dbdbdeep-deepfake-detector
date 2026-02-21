@@ -322,8 +322,13 @@ class DeepfakeDetectorEnsemble:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 
-pixel_path = os.path.join(MODELS_DIR, "best_test1.pth")
-freq_path  = os.path.join(MODELS_DIR, "freq.pt")
+# 기본값(로컬 개발용: 레포 내부 models 폴더)
+DEFAULT_PIXEL_PATH = os.path.join(MODELS_DIR, "best_test1.pth")
+DEFAULT_FREQ_PATH  = os.path.join(MODELS_DIR, "freq.pt")
+
+# 배포/도커용: 환경변수로 override
+pixel_path = os.getenv("IMG_MODEL_PATH", DEFAULT_PIXEL_PATH)
+freq_path  = os.getenv("FREQUENCY_MODEL_PATH",  DEFAULT_FREQ_PATH)
 
 detector = DeepfakeDetectorEnsemble(
     pixel_model_path=pixel_path,

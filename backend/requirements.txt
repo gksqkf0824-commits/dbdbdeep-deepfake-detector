@@ -49,7 +49,7 @@ nvidia-nvtx-cu12==12.8.90
 onnx==1.20.1
 onnxruntime==1.24.1
 opencv-python-headless==4.13.0.92
-packaging @ file:///home/task_176104874243446/conda-bld/packaging_1761049080023/work
+packaging
 pillow==12.1.1
 prettytable==3.17.0
 protobuf==6.33.5
@@ -72,9 +72,6 @@ stringzilla==4.6.0
 sympy==1.14.0
 threadpoolctl==3.6.0
 tifffile==2026.2.16
-torch==2.9.0+cu128
-torchaudio==2.9.0+cu128
-torchvision==0.24.0+cu128
 tqdm==4.67.3
 triton==3.5.0
 typing-inspection==0.4.2

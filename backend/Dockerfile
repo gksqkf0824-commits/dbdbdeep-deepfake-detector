@@ -26,9 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 \
  && rm -rf /var/lib/apt/lists/*
 
-# (GPU) torch/torchvision은 런타임에서 설치 (cu121 예시)
+# (GPU) torch/torchvision은 런타임에서 설치
 RUN pip install --upgrade pip \
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu118
+    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu118
 
 # 빌드 stage에서 만든 wheels를 복사해서 설치
 COPY --from=build /w/wheels /w/wheels

@@ -2,12 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts';
 import './index.css';
 
-const FALLBACK_API_BASE =
-  typeof window !== 'undefined'
-    ? `${window.location.protocol}//${window.location.hostname}:8000`
-    : 'http://127.0.0.1:8000';
-
-const API_BASE = (process.env.REACT_APP_API_BASE || FALLBACK_API_BASE).replace(/\/$/, '');
+const API_BASE = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
 
 const EMPTY_RESULT = {
   confidence: null,
@@ -61,7 +56,7 @@ async function analyzeWithFastAPI(file, fileType) {
   const formData = new FormData();
   formData.append('file', file);
 
-  const endpoint = fileType === 'video' ? '/analyze-video' : '/analyze';
+  const endpoint = fileType === 'video' ? '/api/analyze-video' : '/api/analyze';
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
     body: formData,

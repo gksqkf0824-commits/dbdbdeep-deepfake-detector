@@ -23,4 +23,4 @@ tqdm==4.66.*
 # --- face / onnx ---
 insightface==0.7.3
 onnx==1.15.*
-onnxruntime==1.17.*
+onnxruntime-gpu==1.17.*

@@ -1,26 +1,21 @@
-# --- web/api ---
 fastapi==0.110.*
 uvicorn[standard]==0.29.*
 python-multipart==0.0.9
 
-# --- core ---
 numpy==1.26.*
 pydantic==2.6.*
 PyYAML==6.0.*
 requests==2.31.*
 redis==5.0.*
 
-# --- vision / preprocessing ---
 pillow==10.*
 opencv-python-headless==4.9.*
 albumentations==1.4.*
 scikit-image==0.22.*
 
-# --- ML utils ---
 scikit-learn==1.4.*
 tqdm==4.66.*
 
-# --- face / onnx ---
 insightface==0.7.3
 onnx==1.15.*
 onnxruntime-gpu==1.17.*

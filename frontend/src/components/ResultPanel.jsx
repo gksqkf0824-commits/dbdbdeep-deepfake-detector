@@ -9,6 +9,17 @@ const toFiniteNumber = (value) => {
   return Number.isFinite(n) ? n : null;
 };
 
+const formatAggModeLabel = (mode) => {
+  const raw = String(mode || "").trim();
+  if (!raw) return "-";
+  if (raw === "trimmed_mean_10pct") return "Trimmed Mean 10 Percent";
+  return raw
+    .split("_")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+};
+
 // 1. 도넛 차트 컴포넌트 
 const ScoreDonutChart = ({ score, color }) => {
   const safeScore = Math.max(0, Math.min(100, Number(score)));
@@ -77,7 +88,7 @@ const VideoTimelineChart = ({ data }) => {
 };
 
 // 💡 props에 faceImageUrl 추가
-export default function ResultPanel({ progress, result, error, faceImageUrl }) {
+export default function ResultPanel({ progress, result, error, faceImageUrl, fileType = "" }) {
   const pixelScore = toFiniteNumber(result?.pixelScore ?? result?.pixel_score);
   const freqScore = toFiniteNumber(result?.freqScore ?? result?.freq_score);
 
@@ -94,6 +105,7 @@ export default function ResultPanel({ progress, result, error, faceImageUrl }) {
   const latestTimeline = timeline.length > 0 ? timeline[timeline.length - 1] : null;
   const isMultiData = timeline.length > 1;
   const timelineFinal = toFiniteNumber(latestTimeline?.final);
+  const isVideo = fileType === "video" || Boolean(result?.videoMeta);
 
   const trust = (() => {
     const representative = toFiniteNumber(result?.videoRepresentativeConfidence);
@@ -198,7 +210,7 @@ export default function ResultPanel({ progress, result, error, faceImageUrl }) {
 
       {/* Charts & Images 통합 영역 */}
       <div className="mt-6">
-        {isMultiData ? (
+        {isVideo && isMultiData ? (
           <div className="border border-gray-200 rounded-lg p-5 bg-white">
             <div className="font-semibold text-slate-800 mb-4 flex justify-between items-center">
               <span>타임라인 분석 (신뢰도 추이)</span>
@@ -206,6 +218,21 @@ export default function ResultPanel({ progress, result, error, faceImageUrl }) {
             </div>
             <div className="h-[200px] w-full">
               <VideoTimelineChart data={timeline} />
+            </div>
+          </div>
+        ) : isVideo ? (
+          <div className="grid grid-cols-2 gap-4">
+            <div className="border border-gray-200 rounded-lg p-4 bg-white h-[220px] flex flex-col">
+              <div className="font-semibold text-slate-800">주파수 분석</div>
+              <div className="flex-1 flex items-center justify-center text-3xl text-slate-300 font-semibold">
+                --
+              </div>
+            </div>
+            <div className="border border-gray-200 rounded-lg p-4 bg-white h-[220px] flex flex-col">
+              <div className="font-semibold text-slate-800">픽셀 분석</div>
+              <div className="flex-1 flex items-center justify-center text-3xl text-slate-300 font-semibold">
+                --
+              </div>
             </div>
           </div>
         ) : (
@@ -249,10 +276,10 @@ export default function ResultPanel({ progress, result, error, faceImageUrl }) {
 
       {result?.videoMeta && (
         <div className="mt-5 border border-slate-200 rounded-lg p-3 bg-slate-50 text-xs text-slate-600 grid grid-cols-2 gap-2">
-          <div>샘플링 프레임: {result.videoMeta.sampled_frames ?? "-"}</div>
-          <div>사용 프레임: {result.videoMeta.used_frames ?? "-"}</div>
-          <div>실패 프레임: {result.videoMeta.failed_frames ?? "-"}</div>
-          <div>집계 방식: {result.videoMeta.agg_mode ?? "-"}</div>
+          <div>전체 샘플링 프레임: {result.videoMeta.sampled_frames ?? "-"}</div>
+          <div>추론 사용 프레임: {result.videoMeta.used_frames ?? "-"}</div>
+          <div>얼굴 검출 실패 프레임: {result.videoMeta.failed_frames ?? "-"}</div>
+          <div>집계 방식: {formatAggModeLabel(result.videoMeta.agg_mode)}</div>
         </div>
       )}
 

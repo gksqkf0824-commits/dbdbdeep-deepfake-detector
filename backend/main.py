@@ -399,7 +399,7 @@ async def analyze_video(file: UploadFile = File(...)):
         analysis_result["video_meta"] = {
             "used_frames": len(scores),
             "failed_frames": failed,
-            "agg_mode": "trimmed_mean_10pct",
+            "agg_mode": "Trimmed Mean 10 Percent",
             "pixel_freq_agg_mode": AGG_MODE_VIDEO,
             "topk": TOPK,
         }

@@ -39,6 +39,37 @@ const FadeInSection = ({ children, delay = "duration-1000" }) => {
 
 export default function Landing() {
   const nav = useNavigate();
+  const featureCards = [
+    { title: "Real-Time", desc: "대기 없는 즉시 판별" },
+    { title: "Deep-Scan", desc: "주파수 및 픽셀 다각도 분석" },
+    { title: "All-in-One", desc: "사진·영상·URL 통합 지원" },
+    { title: "Zero-Log", desc: "분석 후 즉시 영구 파기" },
+  ];
+  const [activeFeatureIdx, setActiveFeatureIdx] = useState(0);
+  const [hoveredFeatureIdx, setHoveredFeatureIdx] = useState(null);
+  const featureCycleRef = useRef(0);
+
+  useEffect(() => {
+    if (hoveredFeatureIdx !== null) return;
+
+    const timer = setInterval(() => {
+      featureCycleRef.current = (featureCycleRef.current + 1) % featureCards.length;
+      setActiveFeatureIdx(featureCycleRef.current);
+    }, 1800);
+
+    return () => clearInterval(timer);
+  }, [hoveredFeatureIdx, featureCards.length]);
+
+  const onFeatureEnter = (idx) => {
+    featureCycleRef.current = idx;
+    setHoveredFeatureIdx(idx);
+    setActiveFeatureIdx(idx);
+  };
+
+  const onFeatureLeave = () => {
+    setHoveredFeatureIdx(null);
+    setActiveFeatureIdx(featureCycleRef.current);
+  };
 
   // 💡 전문적인 텍스트와 Lucide 아이콘으로 교체된 배열
   const steps = [
@@ -90,22 +121,34 @@ export default function Landing() {
         </button>
 
         <div className="mt-28 grid grid-cols-2 md:grid-cols-4 gap-12 text-center w-full max-w-4xl">
-          <div className="hover:-translate-y-1 transition-transform">
-            <div className="text-3xl md:text-4xl font-extrabold text-[#3182f6] mb-2">Real-Time</div>
-            <div className="text-sm text-slate-500 font-medium">대기 없는 즉시 판별</div>
-          </div>
-          <div className="hover:-translate-y-1 transition-transform">
-            <div className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-2 whitespace-nowrap">Deep-Scan</div>
-            <div className="text-sm text-slate-500 font-medium">주파수 및 픽셀 다각도 분석</div>
-          </div>
-          <div className="hover:-translate-y-1 transition-transform">
-            <div className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-2">All-in-One</div>
-            <div className="text-sm text-slate-500 font-medium">사진·영상·URL 통합 지원</div>
-          </div>
-          <div className="hover:-translate-y-1 transition-transform">
-            <div className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-2">Zero-Log</div>
-            <div className="text-sm text-slate-500 font-medium">분석 후 즉시 영구 파기</div>
-          </div>
+          {featureCards.map((item, idx) => {
+            const isActive = activeFeatureIdx === idx;
+            return (
+              <div
+                key={item.title}
+                onMouseEnter={() => onFeatureEnter(idx)}
+                onMouseLeave={onFeatureLeave}
+                className={`cursor-default transition-all duration-500 ${
+                  isActive ? "-translate-y-1 scale-[1.03]" : ""
+                }`}
+              >
+                <div
+                  className={`text-3xl md:text-4xl font-extrabold mb-2 whitespace-nowrap transition-colors duration-500 ${
+                    isActive ? "text-[#3182f6]" : "text-slate-800"
+                  }`}
+                >
+                  {item.title}
+                </div>
+                <div
+                  className={`text-sm font-medium transition-colors duration-500 ${
+                    isActive ? "text-[#3182f6]" : "text-slate-500"
+                  }`}
+                >
+                  {item.desc}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
 

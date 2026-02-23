@@ -59,11 +59,55 @@ function toRenderableImageUrl(url) {
   return null;
 }
 
-function buildLegacyComment(data) {
+function buildLegacyComment(data, timeline = []) {
   const confidence = Number(data?.confidence);
   const pixel = Number(data?.pixel_score);
   const freq = Number(data?.freq_score);
   const isFake = typeof data?.is_fake === "boolean" ? data.is_fake : null;
+  const isVideoPayload =
+    Array.isArray(data?.video_frame_confidences) ||
+    Array.isArray(data?.video_frame_pixel_scores) ||
+    Array.isArray(data?.video_frame_freq_scores);
+
+  if (isVideoPayload) {
+    const finalSeries = timeline
+      .map((item) => Number(item?.final))
+      .filter((v) => Number.isFinite(v));
+
+    if (finalSeries.length > 0) {
+      const start = finalSeries[0];
+      const mid = finalSeries[Math.floor((finalSeries.length - 1) / 2)];
+      const end = finalSeries[finalSeries.length - 1];
+      const max = Math.max(...finalSeries);
+      const min = Math.min(...finalSeries);
+      const swing = Math.max(0, max - min);
+      const drift = end - start;
+
+      const trend =
+        drift > 3
+          ? "후반으로 갈수록 수치가 상승하는 흐름"
+          : drift < -3
+            ? "후반으로 갈수록 수치가 하강하는 흐름"
+            : "초중후반이 비슷한 박자로 유지되는 흐름";
+
+      const stability =
+        swing >= 15
+          ? "구간 변동폭이 커서 장면 전환/압축 영향까지 함께 보는 해석이 안전합니다."
+          : swing >= 8
+            ? "구간별 흔들림이 중간 수준이라 핵심 프레임 재확인이 유효합니다."
+            : "구간 변동폭이 작아 결론의 방향성이 비교적 일정합니다.";
+
+      const verdictText =
+        isFake === true
+          ? "타임라인 전체 기준으로는 조작 가능성 쪽으로 기울었습니다."
+          : isFake === false
+            ? "타임라인 전체 기준으로는 원본 가능성 쪽으로 기울었습니다."
+            : "최종 방향은 추가 근거와 함께 교차 확인하는 편이 안전합니다.";
+
+      return `타임라인 분석 결과 시작 ${start.toFixed(1)}% · 중간 ${mid.toFixed(1)}% · 종료 ${end.toFixed(1)}%로 ${trend}이 관측됐습니다. 최대 변동폭은 ${swing.toFixed(1)}%이며, ${stability} ${verdictText}`;
+    }
+    return "타임라인 분석에 필요한 유효 프레임이 부족해 단일 구간 신호를 중심으로 판독했습니다. 가능하면 원본 영상으로 재검증해 주세요.";
+  }
 
   if (isFake === true) {
     return "겉보기는 그럴듯했지만, 미세 결의 박자가 어긋나 조작 가능성이 높게 관측됐습니다.";
@@ -125,7 +169,7 @@ function parseLegacyResult(response) {
     videoFrameFreqScores,
     timeline,
     preprocessed,
-    comment: buildLegacyComment(data),
+    comment: buildLegacyComment(data, timeline),
     nextSteps: [],
     caveats: [],
   };
@@ -329,6 +373,19 @@ export default function Analyze() {
     stopProgress(0);
   };
 
+  const resetAnalysis = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setInputMode("file");
+    setFile(null);
+    setFileType("");
+    setPreviewUrl(null);
+    setImageUrl("");
+    setVideoDuration(0);
+    setResult(null);
+    setError("");
+    stopProgress(0);
+  };
+
   const analyze = async () => {
     try {
       setError("");
@@ -385,6 +442,7 @@ export default function Analyze() {
             loading={loading}
             hasResult={Boolean(result)}
             aiComment={aiComment}
+            onReset={resetAnalysis}
             onModeChange={onChangeMode}
             onPickFile={onPickFile}
             onUrlChange={setImageUrl}
@@ -395,6 +453,7 @@ export default function Analyze() {
             progress={progress}
             result={result}
             error={error}
+            fileType={fileType}
             faceImageUrl={result?.preprocessed?.cropImage || null}
           />
         </div>

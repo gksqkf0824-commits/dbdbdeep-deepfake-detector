@@ -210,3 +210,6 @@ __marimo__/
 models/
 *.pt
 *.pth
+
+# MacOS
+.DS_*

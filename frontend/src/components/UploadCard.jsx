@@ -8,6 +8,7 @@ export default function UploadCard({
   hasResult = false,
   aiComment = "",
   imageUrl,
+  onReset,
   onModeChange,
   onPickFile,
   onAnalyze,
@@ -42,6 +43,16 @@ export default function UploadCard({
     if (hasResult) return "분석이 완료되었습니다. 결과 패널의 상세 근거를 함께 확인해보세요.";
     return defaultComment;
   })();
+
+  const onClickPrimary = () => {
+    if (loading) return;
+    if (hasResult) {
+      if (inputRef.current) inputRef.current.value = "";
+      onReset?.();
+      return;
+    }
+    onAnalyze?.();
+  };
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 h-full flex flex-col">
@@ -146,15 +157,17 @@ export default function UploadCard({
 
       {/* Analyze Button */}
       <button
-        onClick={onAnalyze}
+        onClick={onClickPrimary}
         disabled={loading}
         className={`w-full mt-5 py-3 rounded-lg font-semibold text-white transition flex-shrink-0 ${
           loading
             ? "bg-blue-300 cursor-not-allowed"
-            : "bg-gradient-to-r from-blue-600 to-indigo-500 hover:opacity-90"
+            : hasResult
+              ? "bg-slate-700 hover:bg-slate-800"
+              : "bg-gradient-to-r from-blue-600 to-indigo-500 hover:opacity-90"
         }`}
       >
-        {loading ? "분석 중..." : "판독 시작"}
+        {loading ? "분석 중..." : hasResult ? "초기화" : "판독 시작"}
       </button>
 
       {/* Comment Box */}

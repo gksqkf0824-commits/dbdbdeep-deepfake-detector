@@ -15,7 +15,46 @@ import './index.css';
 
 const API_BASE = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
 
+const REGION_LABEL = {
+  eyes: '눈 주변',
+  nose: '코 주변',
+  mouth: '입 주변',
+  forehead: '이마',
+  jawline: '턱선',
+  cheeks: '볼',
+};
+
+const FREQ_BAND_META = {
+  low: { label: '저주파', range: '0 ~ 0.125 cycles/pixel' },
+  mid: { label: '중주파', range: '0.125 ~ 0.25 cycles/pixel' },
+  high: { label: '고주파', range: '0.25 ~ 0.5 cycles/pixel' },
+};
+
+const toRegionLabel = (region) => REGION_LABEL[region] || region || '미확정';
+
+const toBandLabel = (band, withRange = false) => {
+  if (typeof band === 'string' && band.trim().toLowerCase() === 'unknown') {
+    return 'UNKNOWN';
+  }
+  const meta = FREQ_BAND_META[band];
+  if (!meta) return band || '미확정';
+  return withRange ? `${meta.label}(${meta.range})` : meta.label;
+};
+
+const formatSignedDelta = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 'N/A';
+  return `${n >= 0 ? '+' : ''}${n.toFixed(3)}`;
+};
+
+const formatRatioPercent = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 'N/A';
+  return `${(n * 100).toFixed(1)}%`;
+};
+
 const EMPTY_RESULT = {
+  requestId: '',
   confidence: null,
   pixelScore: null,
   freqScore: null,
@@ -29,6 +68,16 @@ const EMPTY_RESULT = {
   videoFrameFreqScores: [],
   preprocessed: null,
   comment: '',
+  topRegions: [],
+  dominantBand: '',
+  dominantEnergyBand: '',
+  explanationSummary: '',
+  spatialFindings: [],
+  frequencyFindings: [],
+  bandAblation: [],
+  bandEnergy: [],
+  camOverlayUrl: '',
+  spectrumUrl: '',
 };
 
 const DonutChart = ({ score, label, color = '#00f2ff' }) => {
@@ -77,7 +126,7 @@ async function analyzeWithFastAPI(file, fileType) {
     formData.append('fusion_w', '0.5');
   }
 
-  const endpoint = fileType === 'video' ? '/api/analyze-video' : '/api/analyze';
+  const endpoint = fileType === 'video' ? '/analyze-video' : '/api/analyze';
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
     body: formData,
@@ -121,6 +170,108 @@ function toRenderableImageUrl(url) {
   }
   return null;
 }
+
+const clampProb = (v) => Math.max(0, Math.min(1, Number(v)));
+const toRealConfidence = (fakeProb) =>
+  Number.isFinite(Number(fakeProb)) ? (1 - clampProb(fakeProb)) * 100 : null;
+
+const parseLegacyResult = (response) => {
+  const data = response?.data || response || {};
+  const videoFrameConfidences = Array.isArray(data.video_frame_confidences)
+    ? data.video_frame_confidences.map(Number).filter(Number.isFinite)
+    : [];
+  const videoFramePixelScores = Array.isArray(data.video_frame_pixel_scores)
+    ? data.video_frame_pixel_scores.map(Number).filter(Number.isFinite)
+    : [];
+  const videoFrameFreqScores = Array.isArray(data.video_frame_freq_scores)
+    ? data.video_frame_freq_scores.map(Number).filter(Number.isFinite)
+    : [];
+
+  const preprocessed =
+    data.preprocessed && typeof data.preprocessed === 'object'
+      ? {
+          cropImage: toDataUrl(
+            data.preprocessed.face_crop_image_b64,
+            data.preprocessed.mime_type || 'image/jpeg'
+          ),
+        }
+      : null;
+
+  return {
+    ...EMPTY_RESULT,
+    requestId: '',
+    confidence: Number.isFinite(data.confidence) ? data.confidence : null,
+    pixelScore: Number.isFinite(data.pixel_score) ? data.pixel_score : null,
+    freqScore: Number.isFinite(data.freq_score) ? data.freq_score : null,
+    isFake: typeof data.is_fake === 'boolean' ? data.is_fake : null,
+    pValue: Number.isFinite(data.p_value) ? data.p_value : null,
+    reliability: data.reliability || '',
+    videoMeta: data.video_meta || null,
+    videoRepresentativeConfidence: Number.isFinite(data.video_representative_confidence)
+      ? data.video_representative_confidence
+      : null,
+    videoFrameConfidences,
+    videoFramePixelScores,
+    videoFrameFreqScores,
+    preprocessed,
+    comment:
+      data.is_fake === true
+        ? '[경고] 조작 가능성이 높습니다. 추가 검증을 권장합니다.'
+        : '[판독 완료] 무결성 지표가 정상 범위입니다.',
+  };
+};
+
+const parseEvidenceResult = (response) => {
+  const score = response?.score || {};
+  const faces = Array.isArray(response?.faces) ? response.faces : [];
+  const firstFace = faces[0] || {};
+  const explanation = firstFace?.explanation || {};
+  const spatialEvidence = firstFace?.evidence?.spatial || {};
+  const freqEvidence = firstFace?.evidence?.frequency || {};
+
+  const confidence = toRealConfidence(score.p_final);
+  const isFake = Number.isFinite(confidence) ? confidence < 50 : null;
+
+  const cropImage = toRenderableImageUrl(firstFace?.assets?.face_crop_url || '');
+  const preprocessed = cropImage ? { cropImage } : null;
+
+  return {
+    ...EMPTY_RESULT,
+    requestId: response?.request_id || '',
+    confidence,
+    pixelScore: toRealConfidence(score.p_rgb),
+    freqScore: toRealConfidence(score.p_freq),
+    isFake,
+    pValue: null,
+    reliability: '',
+    preprocessed,
+    comment:
+      explanation?.summary ||
+      (isFake
+        ? '[경고] 비정상 징후가 감지되었습니다. 추가 검증을 권장합니다.'
+        : '[판독 완료] 비정상 징후가 낮게 관찰되었습니다.'),
+    topRegions: Array.isArray(spatialEvidence?.regions_topk) ? spatialEvidence.regions_topk : [],
+    dominantBand: freqEvidence?.dominant_band || '',
+    dominantEnergyBand: freqEvidence?.dominant_energy_band || '',
+    explanationSummary: explanation?.summary || '',
+    spatialFindings: Array.isArray(explanation?.spatial_findings) ? explanation.spatial_findings : [],
+    frequencyFindings: Array.isArray(explanation?.frequency_findings) ? explanation.frequency_findings : [],
+    bandAblation: Array.isArray(freqEvidence?.band_ablation) ? freqEvidence.band_ablation : [],
+    bandEnergy: Array.isArray(freqEvidence?.band_energy) ? freqEvidence.band_energy : [],
+    camOverlayUrl: toRenderableImageUrl(firstFace?.assets?.cam_overlay_url || ''),
+    spectrumUrl: toRenderableImageUrl(firstFace?.assets?.spectrum_url || ''),
+  };
+};
+
+const parseAnalyzeResponse = (response, fileType) => {
+  if (fileType === 'video') {
+    return parseLegacyResult(response);
+  }
+  if (response?.score && Array.isArray(response?.faces)) {
+    return parseEvidenceResult(response);
+  }
+  return parseLegacyResult(response);
+};
 
 function App() {
   const [selectedFileUrl, setSelectedFileUrl] = useState(null);
@@ -213,103 +364,7 @@ function App() {
 
     try {
       const response = await analyzeWithFastAPI(rawFile, fileType);
-      const data =
-        response && typeof response === 'object' && response.data && typeof response.data === 'object'
-          ? response.data
-          : response;
-      const isEvidenceFormat =
-        data &&
-        typeof data === 'object' &&
-        data.score &&
-        typeof data.score === 'object' &&
-        Array.isArray(data.faces);
-      const videoFrameConfidences = Array.isArray(data.video_frame_confidences)
-        ? data.video_frame_confidences
-            .map((value) => Number(value))
-            .filter((value) => Number.isFinite(value))
-        : [];
-      const videoFramePixelScores = Array.isArray(data.video_frame_pixel_scores)
-        ? data.video_frame_pixel_scores
-            .map((value) => Number(value))
-            .filter((value) => Number.isFinite(value))
-        : [];
-      const videoFrameFreqScores = Array.isArray(data.video_frame_freq_scores)
-        ? data.video_frame_freq_scores
-            .map((value) => Number(value))
-            .filter((value) => Number.isFinite(value))
-        : [];
-      const videoRepresentativeConfidence = Number.isFinite(data.video_representative_confidence)
-        ? data.video_representative_confidence
-        : null;
-
-      let confidence = null;
-      let pixelScore = null;
-      let freqScore = null;
-      let isFake = null;
-      let pValue = null;
-      let reliability = '';
-      let preprocessed = null;
-      let comment = '';
-
-      if (isEvidenceFormat) {
-        const pFinal = Number(data.score?.p_final);
-        const pRgb = Number(data.score?.p_rgb);
-        const pFreq = Number(data.score?.p_freq);
-
-        confidence = Number.isFinite(pFinal) ? Math.max(0, Math.min(100, pFinal * 100)) : null;
-        pixelScore = Number.isFinite(pRgb) ? Math.max(0, Math.min(100, pRgb * 100)) : null;
-        freqScore = Number.isFinite(pFreq) ? Math.max(0, Math.min(100, pFreq * 100)) : null;
-        isFake = Number.isFinite(confidence) ? confidence >= 50 : null;
-
-        const firstFace = Array.isArray(data.faces) && data.faces.length > 0 ? data.faces[0] : null;
-        const cropImage = toRenderableImageUrl(firstFace?.assets?.face_crop_url);
-        preprocessed = cropImage ? { cropImage } : null;
-
-        const explanationSummary = firstFace?.explanation?.summary;
-        if (typeof explanationSummary === 'string' && explanationSummary.trim().length > 0) {
-          comment = explanationSummary.trim();
-        }
-      } else {
-        confidence = Number.isFinite(data.confidence) ? data.confidence : null;
-        pixelScore = Number.isFinite(data.pixel_score) ? data.pixel_score : null;
-        freqScore = Number.isFinite(data.freq_score) ? data.freq_score : null;
-        isFake = typeof data.is_fake === 'boolean' ? data.is_fake : null;
-        pValue = Number.isFinite(data.p_value) ? data.p_value : null;
-        reliability = data.reliability || '';
-
-        preprocessed =
-          data.preprocessed && typeof data.preprocessed === 'object'
-            ? {
-                cropImage: toDataUrl(
-                  data.preprocessed.face_crop_image_b64,
-                  data.preprocessed.mime_type || 'image/jpeg'
-                ),
-              }
-            : null;
-      }
-
-      if (!comment) {
-        comment =
-          isFake === true
-            ? '[경고] 조작 가능성이 높습니다. 추가 검증을 권장합니다.'
-            : '[판독 완료] 무결성 지표가 정상 범위입니다.';
-      }
-
-      setAnalysisResult({
-        confidence,
-        pixelScore,
-        freqScore,
-        isFake,
-        pValue,
-        reliability,
-        videoMeta: data.video_meta || null,
-        videoRepresentativeConfidence,
-        videoFrameConfidences,
-        videoFramePixelScores,
-        videoFrameFreqScores,
-        preprocessed,
-        comment,
-      });
+      setAnalysisResult(parseAnalyzeResponse(response, fileType));
       stopProgress(100);
     } catch (error) {
       stopProgress(0);
@@ -402,12 +457,123 @@ function App() {
             {isAnalyzing ? '데이터 정밀 분석 중...' : '판별하기'}
           </button>
 
+          {(analysisResult.camOverlayUrl || analysisResult.spectrumUrl) && (
+            <div className="p-4 bg-black/80 border-l-4 border-[#ff007f] text-sm space-y-2">
+              <h3 className="text-[#ff007f] text-base font-bold">시각 근거 이미지</h3>
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                {analysisResult.camOverlayUrl && (
+                  <div>
+                    <p className="text-xs opacity-70 mb-1">CAM Overlay</p>
+                    <img
+                      src={analysisResult.camOverlayUrl}
+                      alt="CAM Overlay"
+                      className="w-full border border-cyan-700/50"
+                    />
+                  </div>
+                )}
+                {analysisResult.spectrumUrl && (
+                  <div>
+                    <p className="text-xs opacity-70 mb-1">Wavelet</p>
+                    <img
+                      src={analysisResult.spectrumUrl}
+                      alt="Wavelet Map"
+                      className="w-full border border-pink-700/50"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="p-4 bg-black/80 border-l-4 border-[#00f2ff]">
             <h3 className="text-[#00f2ff] text-lg font-bold mb-1 underline">AI 분석관의 한마디</h3>
-            <p className="text-gray-200 text-sm font-mono italic">
+            <p className="text-gray-200 text-sm font-mono italic whitespace-pre-line leading-relaxed">
               {analysisResult.comment || '> 가짜는 반드시 흔적을 남깁니다.'}
             </p>
           </div>
+
+          {(analysisResult.topRegions.length > 0 ||
+            analysisResult.spatialFindings.length > 0 ||
+            analysisResult.dominantBand ||
+            analysisResult.dominantEnergyBand ||
+            analysisResult.bandAblation.length > 0 ||
+            analysisResult.bandEnergy.length > 0 ||
+            analysisResult.frequencyFindings.length > 0) && (
+            <div className="p-4 bg-black/80 border-l-4 border-[#ff007f] text-sm space-y-2">
+              <h3 className="text-[#ff007f] text-base font-bold">상세 분석 (Spatial + Frequency)</h3>
+              {analysisResult.topRegions.length > 0 && (
+                <p>
+                  주요 부위:{' '}
+                  {analysisResult.topRegions
+                    .slice(0, 2)
+                    .map((r) => {
+                      const cam = Number(r.importance_cam);
+                      const camText = Number.isFinite(cam) ? cam.toFixed(2) : 'N/A';
+                      return `${toRegionLabel(r.region)} (CAM ${camText})`;
+                    })
+                    .join(', ')}
+                </p>
+              )}
+              {analysisResult.dominantBand && (
+                <p>우세 주파수 대역: {toBandLabel(analysisResult.dominantBand, false)}</p>
+              )}
+              {analysisResult.dominantEnergyBand && (
+                <p>Wavelet 에너지 우세 대역: {toBandLabel(analysisResult.dominantEnergyBand, false)}</p>
+              )}
+              {analysisResult.bandAblation.length > 0 && (
+                <p>
+                  밴드 제거 민감도(Δfake):{' '}
+                  {analysisResult.bandAblation
+                    .map((b) => `${toBandLabel(b.band, false)} ${formatSignedDelta(b.delta_fake_prob)}`)
+                    .join(' | ')}
+                </p>
+              )}
+              {analysisResult.bandEnergy.length > 0 && (
+                <p>
+                  밴드 에너지 비율:{' '}
+                  {analysisResult.bandEnergy
+                    .map((b) => `${toBandLabel(b.band, false)} ${formatRatioPercent(b.energy_ratio)}`)
+                    .join(' | ')}
+                </p>
+              )}
+              {analysisResult.spatialFindings.length > 0 && (
+                <div className="pt-1 space-y-1">
+                  <p className="text-xs opacity-80">이미지 세부 해석</p>
+                  {analysisResult.spatialFindings.slice(0, 3).map((s, idx) => (
+                    <p key={`spatial-finding-${idx}`} className="text-xs leading-relaxed text-cyan-100/90">
+                      {idx + 1}. {s.claim} ({s.evidence})
+                    </p>
+                  ))}
+                </div>
+              )}
+              {analysisResult.frequencyFindings.length > 0 && (
+                <div className="pt-1 space-y-1">
+                  <p className="text-xs opacity-80">주파수 세부 해석</p>
+                  {analysisResult.frequencyFindings.slice(0, 3).map((f, idx) => (
+                    <p key={`freq-finding-${idx}`} className="text-xs leading-relaxed text-pink-100/90">
+                      {idx + 1}. {f.claim} ({f.evidence})
+                    </p>
+                  ))}
+                </div>
+              )}
+              <div className="mt-2 pt-3 border-t border-[#ff007f]/30 text-xs text-gray-200/90 space-y-1 leading-relaxed">
+                <p className="font-bold text-[#ffd6ea]">해석 가이드</p>
+                <p>주요 부위: 모델이 얼굴에서 특히 주목한 위치(CAM 기반)입니다.</p>
+                <p>우세 주파수 대역: 밴드를 제거했을 때 예측 변화가 가장 큰 구간입니다.</p>
+                <p>밴드 제거 민감도(Δfake): 각 대역 제거 전후의 fake 확률 변화량입니다.</p>
+                <p>밴드 에너지 비율: Wavelet 에너지가 각 대역에 분포한 상대 비율입니다.</p>
+                <p>
+                  저주파({FREQ_BAND_META.low.range}): 얼굴의 큰 윤곽, 완만한 밝기/색 변화 같은 저해상 구조 성분입니다.
+                </p>
+                <p>
+                  중주파({FREQ_BAND_META.mid.range}): 눈/코/입 주변 경계, 피부 결 등 중간 규모 텍스처 성분입니다.
+                </p>
+                <p>
+                  고주파({FREQ_BAND_META.high.range}): 미세 경계, 세부 노이즈, 과도한 샤프닝/압축 잔상에 민감한 성분입니다.
+                </p>
+              </div>
+            </div>
+          )}
 
           {analysisResult.videoMeta && (
             <div className="p-4 bg-black/80 border-l-4 border-[#00f2ff] text-sm">

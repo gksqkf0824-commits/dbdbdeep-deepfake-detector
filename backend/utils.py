@@ -1,10 +1,20 @@
 import json
 import hashlib
+import base64
 from typing import Dict, Any, Optional, List, Tuple
 
 import numpy as np
 import cv2
 import scipy.stats as stats
+import torch
+import torch.nn.functional as F
+
+from model import (
+    detector,
+    make_square_bbox_with_margin,
+    resize_with_padding,
+    build_4ch_srm_y,
+)
 
 
 # =========================
@@ -375,4 +385,747 @@ def build_analysis_result(
         "is_fake": float(score) < 50,
         "p_value": p_val,
         "reliability": make_reliability_label(p_val),
+    }
+
+
+# =========================
+# Evidence / Explain helpers
+# =========================
+
+def infer_prob_binary(model: torch.nn.Module, x: torch.Tensor) -> float:
+    if model is None:
+        raise RuntimeError("추론 실패: 모델 인스턴스가 없습니다.")
+
+    model.eval()
+    y = model(x)
+    if isinstance(y, (tuple, list)):
+        y = y[0]
+
+    if y.ndim == 2 and y.shape[1] == 2:
+        prob_fake = F.softmax(y, dim=1)[:, 1]
+        return float(prob_fake.item())
+
+    prob_fake = torch.sigmoid(y.view(-1))
+    return float(prob_fake.item())
+
+
+def fuse_probs(p_rgb: float, p_freq: float, w: float = 0.5) -> float:
+    w = float(max(0.0, min(1.0, w)))
+    p = (w * float(p_rgb)) + ((1.0 - w) * float(p_freq))
+    return float(max(0.0, min(1.0, p)))
+
+
+def _ensure_224_rgb(img_rgb_uint8: np.ndarray) -> np.ndarray:
+    if img_rgb_uint8.ndim != 3 or img_rgb_uint8.shape[2] != 3:
+        raise ValueError("RGB uint8 이미지(3채널) 입력이 필요합니다.")
+    if img_rgb_uint8.dtype != np.uint8:
+        img_rgb_uint8 = np.clip(img_rgb_uint8, 0, 255).astype(np.uint8)
+    if img_rgb_uint8.shape[0] == 224 and img_rgb_uint8.shape[1] == 224:
+        return img_rgb_uint8
+    return cv2.resize(img_rgb_uint8, (224, 224), interpolation=cv2.INTER_LINEAR)
+
+
+def rgb_preprocess_tensor(img_rgb_uint8: np.ndarray) -> torch.Tensor:
+    from PIL import Image
+
+    img = _ensure_224_rgb(img_rgb_uint8)
+    pil = Image.fromarray(img)
+    return detector.pixel_transform(pil).unsqueeze(0).to(detector.device, non_blocking=True)
+
+
+def freq_preprocess_tensor(img_rgb_uint8: np.ndarray) -> torch.Tensor:
+    img = _ensure_224_rgb(img_rgb_uint8)
+    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    combined_4ch = build_4ch_srm_y(bgr, detector.srm_filters)
+    return (
+        torch.from_numpy(combined_4ch.astype(np.float32) / 255.0)
+        .permute(2, 0, 1)
+        .unsqueeze(0)
+        .to(detector.device, non_blocking=True)
+    )
+
+
+def get_cam_target_layer(model: torch.nn.Module) -> torch.nn.Module:
+    if hasattr(model, "features"):
+        return model.features[-1]
+    if hasattr(model, "model") and hasattr(model.model, "features"):
+        return model.model.features[-1]
+    raise RuntimeError("CAM target layer를 자동 선택할 수 없습니다. 모델 구조를 확인하세요.")
+
+
+def _extract_landmarks_5pt(face_obj) -> Optional[np.ndarray]:
+    kps = getattr(face_obj, "kps", None)
+    if kps is not None:
+        arr = np.asarray(kps, dtype=np.float32)
+        if arr.ndim == 2 and arr.shape[0] >= 5 and arr.shape[1] >= 2:
+            return arr[:5, :2]
+
+    kps106 = getattr(face_obj, "landmark_2d_106", None)
+    if kps106 is not None:
+        arr = np.asarray(kps106, dtype=np.float32)
+        if arr.ndim == 2 and arr.shape[0] >= 5 and arr.shape[1] >= 2:
+            return arr[:5, :2]
+
+    return None
+
+
+def _default_landmarks_5pt(target_size: int = 224) -> np.ndarray:
+    return np.asarray(
+        [
+            [0.31 * target_size, 0.40 * target_size],
+            [0.69 * target_size, 0.40 * target_size],
+            [0.50 * target_size, 0.56 * target_size],
+            [0.39 * target_size, 0.73 * target_size],
+            [0.61 * target_size, 0.73 * target_size],
+        ],
+        dtype=np.float32,
+    )
+
+
+def _map_landmarks_to_crop(
+    landmarks_xy: np.ndarray,
+    square_bbox: List[int],
+    crop_h: int,
+    crop_w: int,
+    target_size: int,
+) -> np.ndarray:
+    x1, y1, _, _ = square_bbox
+
+    scale = float(target_size) / float(max(crop_h, crop_w))
+    new_w = int(crop_w * scale)
+    new_h = int(crop_h * scale)
+
+    pad_t = (target_size - new_h) // 2
+    pad_l = (target_size - new_w) // 2
+
+    local = landmarks_xy.astype(np.float32).copy()
+    local[:, 0] = (local[:, 0] - float(x1)) * scale + float(pad_l)
+    local[:, 1] = (local[:, 1] - float(y1)) * scale + float(pad_t)
+
+    local[:, 0] = np.clip(local[:, 0], 0, target_size - 1)
+    local[:, 1] = np.clip(local[:, 1], 0, target_size - 1)
+    return local.astype(np.float32)
+
+
+def detect_faces_with_aligned_crops(
+    image_bgr: np.ndarray,
+    margin: float = 0.15,
+    target_size: int = 224,
+    max_faces: int = 8,
+) -> List[Dict[str, np.ndarray]]:
+    face_app = getattr(getattr(detector, "face_cropper", None), "app", None)
+    if face_app is None:
+        raise RuntimeError("InsightFace 초기화 실패: detector.face_cropper.app를 찾을 수 없습니다.")
+
+    faces = face_app.get(image_bgr)
+    if not faces:
+        return []
+
+    faces_sorted = sorted(
+        faces,
+        key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])),
+        reverse=True,
+    )
+
+    img_h, img_w = image_bgr.shape[:2]
+    out: List[Dict[str, np.ndarray]] = []
+
+    for face in faces_sorted[:max_faces]:
+        bbox = np.asarray(face.bbox, dtype=np.float32)
+        square_bbox = make_square_bbox_with_margin(
+            bbox.tolist(),
+            margin=margin,
+            img_width=img_w,
+            img_height=img_h,
+        )
+
+        x1, y1, x2, y2 = [int(v) for v in square_bbox]
+        crop = image_bgr[y1:y2, x1:x2]
+        if crop.size == 0:
+            continue
+
+        crop_224_bgr = resize_with_padding(crop, target_size=target_size)
+        crop_224_rgb = cv2.cvtColor(crop_224_bgr, cv2.COLOR_BGR2RGB)
+
+        landmarks = _extract_landmarks_5pt(face)
+        if landmarks is None:
+            lm_crop = _default_landmarks_5pt(target_size=target_size)
+        else:
+            lm_crop = _map_landmarks_to_crop(
+                landmarks_xy=landmarks,
+                square_bbox=square_bbox,
+                crop_h=crop.shape[0],
+                crop_w=crop.shape[1],
+                target_size=target_size,
+            )
+
+        out.append(
+            {
+                "crop_rgb": crop_224_rgb,
+                "landmarks": lm_crop,
+                "bbox": bbox,
+            }
+        )
+
+    return out
+
+
+class GradCAM:
+    def __init__(self, model: torch.nn.Module, target_layer: torch.nn.Module):
+        self.model = model.eval()
+        self.target_layer = target_layer
+        self._features: Optional[torch.Tensor] = None
+        self._grads: Optional[torch.Tensor] = None
+        self._hooks = []
+        self._register_hooks()
+
+    def _register_hooks(self) -> None:
+        def fwd_hook(_, __, output):
+            self._features = output
+
+        def bwd_hook(_, grad_in, grad_out):
+            _ = grad_in
+            self._grads = grad_out[0]
+
+        self._hooks.append(self.target_layer.register_forward_hook(fwd_hook))
+        self._hooks.append(self.target_layer.register_full_backward_hook(bwd_hook))
+
+    def close(self) -> None:
+        for h in self._hooks:
+            try:
+                h.remove()
+            except Exception:
+                pass
+        self._hooks.clear()
+
+    def __call__(self, x: torch.Tensor, class_idx: Optional[int] = None) -> np.ndarray:
+        self.model.zero_grad(set_to_none=True)
+        x = x.requires_grad_(True)
+
+        y = self.model(x)
+        if isinstance(y, (tuple, list)) and y:
+            y = y[0]
+
+        if y.ndim == 2 and y.shape[1] == 2:
+            idx = 1 if class_idx is None else int(class_idx)
+            score = y[:, idx].sum()
+        else:
+            score = y.reshape(-1).sum()
+
+        score.backward(retain_graph=False)
+
+        feats = self._features
+        grads = self._grads
+        if feats is None or grads is None:
+            raise RuntimeError("GradCAM hook에서 feature/gradient를 수집하지 못했습니다.")
+
+        weights = grads.mean(dim=(2, 3), keepdim=True)
+        cam = (weights * feats).sum(dim=1, keepdim=True)
+        cam = F.relu(cam)
+
+        cam_np = cam.detach().cpu().numpy()[0, 0]
+        cam_np = cv2.resize(cam_np, (x.shape[-1], x.shape[-2]), interpolation=cv2.INTER_LINEAR)
+        cam_np = cam_np - cam_np.min()
+        cam_np = cam_np / (cam_np.max() + 1e-6)
+        return cam_np.astype(np.float32)
+
+
+def overlay_cam(rgb_img_uint8: np.ndarray, heatmap01: np.ndarray, alpha: float = 0.45) -> np.ndarray:
+    hmap = (np.clip(heatmap01, 0.0, 1.0) * 255).astype(np.uint8)
+    hmap = cv2.applyColorMap(hmap, cv2.COLORMAP_JET)
+    hmap = cv2.cvtColor(hmap, cv2.COLOR_BGR2RGB)
+    out = (rgb_img_uint8 * (1.0 - alpha) + hmap * alpha).astype(np.uint8)
+    return out
+
+
+def _clamp_box(x1, y1, x2, y2, w, h):
+    x1 = int(max(0, min(w - 1, x1)))
+    x2 = int(max(0, min(w, x2)))
+    y1 = int(max(0, min(h - 1, y1)))
+    y2 = int(max(0, min(h, y2)))
+    if x2 <= x1:
+        x2 = min(w, x1 + 1)
+    if y2 <= y1:
+        y2 = min(h, y1 + 1)
+    return x1, y1, x2, y2
+
+
+def _box_mask(h: int, w: int, box) -> np.ndarray:
+    x1, y1, x2, y2 = box
+    m = np.zeros((h, w), dtype=np.uint8)
+    m[y1:y2, x1:x2] = 1
+    return m
+
+
+def build_region_masks_from_5pt(landmarks: np.ndarray, h: int, w: int) -> Dict[str, np.ndarray]:
+    lm = landmarks.astype(np.float32)
+    le, re, nose, ml, mr = lm[0], lm[1], lm[2], lm[3], lm[4]
+
+    eye_pad_x = 0.12 * w
+    eye_pad_y = 0.08 * h
+    le_box = _clamp_box(le[0] - eye_pad_x, le[1] - eye_pad_y, le[0] + eye_pad_x, le[1] + eye_pad_y, w, h)
+    re_box = _clamp_box(re[0] - eye_pad_x, re[1] - eye_pad_y, re[0] + eye_pad_x, re[1] + eye_pad_y, w, h)
+    eyes_mask = np.maximum(_box_mask(h, w, le_box), _box_mask(h, w, re_box))
+
+    nose_pad_x = 0.10 * w
+    nose_pad_y = 0.12 * h
+    nose_box = _clamp_box(
+        nose[0] - nose_pad_x,
+        nose[1] - nose_pad_y,
+        nose[0] + nose_pad_x,
+        nose[1] + nose_pad_y,
+        w,
+        h,
+    )
+    nose_mask = _box_mask(h, w, nose_box)
+
+    mx1, mx2 = min(ml[0], mr[0]), max(ml[0], mr[0])
+    my = (ml[1] + mr[1]) / 2.0
+    mouth_pad_x = 0.08 * w
+    mouth_pad_y = 0.14 * h
+    mouth_box = _clamp_box(mx1 - mouth_pad_x, my - mouth_pad_y, mx2 + mouth_pad_x, my + mouth_pad_y, w, h)
+    mouth_mask = _box_mask(h, w, mouth_box)
+
+    forehead_mask = _box_mask(h, w, _clamp_box(0, 0, w, int(0.35 * h), w, h))
+    jawline_mask = _box_mask(h, w, _clamp_box(0, int(0.65 * h), w, h, w, h))
+
+    union = np.clip(eyes_mask + nose_mask + mouth_mask + forehead_mask + jawline_mask, 0, 1).astype(np.uint8)
+    cheeks_mask = (1 - union).astype(np.uint8)
+
+    return {
+        "eyes": eyes_mask,
+        "nose": nose_mask,
+        "mouth": mouth_mask,
+        "forehead": forehead_mask,
+        "jawline": jawline_mask,
+        "cheeks": cheeks_mask,
+    }
+
+
+def region_importance_from_heatmap(heatmap01: np.ndarray, masks: Dict[str, np.ndarray]) -> Dict[str, float]:
+    h = heatmap01.astype(np.float32)
+    denom = float(h.sum() + 1e-6)
+    out: Dict[str, float] = {}
+    for k, m in masks.items():
+        out[k] = float((h * m.astype(np.float32)).sum() / denom)
+    return out
+
+
+def _blur_region(img_rgb_uint8: np.ndarray, mask01: np.ndarray, ksize: int = 31) -> np.ndarray:
+    if ksize % 2 == 0:
+        ksize += 1
+    blurred = cv2.GaussianBlur(img_rgb_uint8, (ksize, ksize), 0)
+    mask3 = np.repeat(mask01[..., None], 3, axis=2).astype(np.uint8)
+    out = img_rgb_uint8.copy()
+    out[mask3 == 1] = blurred[mask3 == 1]
+    return out
+
+
+def occlusion_validate_topk(
+    infer_fn,
+    preprocess_fn,
+    img_rgb_uint8: np.ndarray,
+    region_masks: Dict[str, np.ndarray],
+    ranked_regions: List[str],
+    k: int = 2,
+) -> Dict[str, float]:
+    deltas: Dict[str, float] = {}
+    p0 = infer_fn(preprocess_fn(img_rgb_uint8))
+    for r in ranked_regions[: max(1, int(k))]:
+        occ = _blur_region(img_rgb_uint8, region_masks[r], ksize=31)
+        pr = infer_fn(preprocess_fn(occ))
+        deltas[r] = float(pr - p0)
+    return deltas
+
+
+def estimate_outside_face_ratio(heatmap01: np.ndarray, landmarks: np.ndarray) -> float:
+    h, w = heatmap01.shape
+    lm = landmarks.astype(np.float32)
+    face_mask = np.zeros((h, w), dtype=np.uint8)
+
+    x_min = float(np.clip(np.min(lm[:, 0]) - (0.20 * w), 0, w - 1))
+    x_max = float(np.clip(np.max(lm[:, 0]) + (0.20 * w), 1, w))
+    y_min = float(np.clip(np.min(lm[:, 1]) - (0.30 * h), 0, h - 1))
+    y_max = float(np.clip(np.max(lm[:, 1]) + (0.35 * h), 1, h))
+
+    cx = int((x_min + x_max) * 0.5)
+    cy = int((y_min + y_max) * 0.5)
+    ax = max(2, int((x_max - x_min) * 0.5))
+    ay = max(2, int((y_max - y_min) * 0.6))
+    cv2.ellipse(face_mask, (cx, cy), (ax, ay), 0, 0, 360, 1, -1)
+
+    hmap = np.clip(heatmap01.astype(np.float32), 0.0, 1.0)
+    denom = float(hmap.sum() + 1e-6)
+    outside = float((hmap * (1 - face_mask).astype(np.float32)).sum() / denom)
+    return float(max(0.0, min(1.0, outside)))
+
+
+def estimate_localization_confidence(top_importance: float, outside_face_ratio: float) -> str:
+    if top_importance >= 0.25 and outside_face_ratio <= 0.20:
+        return "high"
+    if top_importance >= 0.16 and outside_face_ratio <= 0.35:
+        return "med"
+    return "low"
+
+
+def to_gray(img_rgb_uint8: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(img_rgb_uint8, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+
+
+def gray01_to_rgb_uint8(img_gray01: np.ndarray) -> np.ndarray:
+    g = (np.clip(img_gray01, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return np.stack([g, g, g], axis=2)
+
+
+def _prepare_for_wavelet(gray01: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int]]:
+    h, w = gray01.shape[:2]
+    h4 = h - (h % 4)
+    w4 = w - (w % 4)
+    if h4 < 4 or w4 < 4:
+        raise ValueError("Wavelet 분해를 위한 최소 해상도(4x4)가 부족합니다.")
+    return gray01[:h4, :w4], (h, w)
+
+
+def _haar_dwt2(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    a = x[0::2, 0::2]
+    b = x[0::2, 1::2]
+    c = x[1::2, 0::2]
+    d = x[1::2, 1::2]
+
+    ll = (a + b + c + d) / 2.0
+    lh = (a + b - c - d) / 2.0
+    hl = (a - b + c - d) / 2.0
+    hh = (a - b - c + d) / 2.0
+    return ll.astype(np.float32), lh.astype(np.float32), hl.astype(np.float32), hh.astype(np.float32)
+
+
+def _haar_idwt2(
+    ll: np.ndarray,
+    lh: np.ndarray,
+    hl: np.ndarray,
+    hh: np.ndarray,
+) -> np.ndarray:
+    h, w = ll.shape
+    out = np.zeros((h * 2, w * 2), dtype=np.float32)
+
+    out[0::2, 0::2] = (ll + lh + hl + hh) / 2.0
+    out[0::2, 1::2] = (ll + lh - hl - hh) / 2.0
+    out[1::2, 0::2] = (ll - lh + hl - hh) / 2.0
+    out[1::2, 1::2] = (ll - lh - hl + hh) / 2.0
+    return out
+
+
+def _decompose_l2(gray01: np.ndarray) -> Dict[str, np.ndarray]:
+    ll1, lh1, hl1, hh1 = _haar_dwt2(gray01)
+    ll2, lh2, hl2, hh2 = _haar_dwt2(ll1)
+    return {
+        "ll2": ll2,
+        "lh2": lh2,
+        "hl2": hl2,
+        "hh2": hh2,
+        "lh1": lh1,
+        "hl1": hl1,
+        "hh1": hh1,
+    }
+
+
+def _reconstruct_l2(coeffs: Dict[str, np.ndarray]) -> np.ndarray:
+    ll1 = _haar_idwt2(coeffs["ll2"], coeffs["lh2"], coeffs["hl2"], coeffs["hh2"])
+    x = _haar_idwt2(ll1, coeffs["lh1"], coeffs["hl1"], coeffs["hh1"])
+    return np.clip(x, 0.0, 1.0).astype(np.float32)
+
+
+def _copy_coeffs(coeffs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    return {k: v.copy() for k, v in coeffs.items()}
+
+
+def _norm01(x: np.ndarray) -> np.ndarray:
+    y = np.abs(x).astype(np.float32)
+    y = y - y.min()
+    y = y / (y.max() + 1e-6)
+    return y
+
+
+def wavelet_band_energy_ratio(gray_img01: np.ndarray) -> Dict[str, float]:
+    x, _ = _prepare_for_wavelet(gray_img01)
+    c = _decompose_l2(x)
+
+    e_low = float(np.sum(c["ll2"] ** 2))
+    e_mid = float(np.sum(c["lh2"] ** 2) + np.sum(c["hl2"] ** 2) + np.sum(c["hh2"] ** 2))
+    e_high = float(np.sum(c["lh1"] ** 2) + np.sum(c["hl1"] ** 2) + np.sum(c["hh1"] ** 2))
+    total = e_low + e_mid + e_high + 1e-6
+
+    return {
+        "low": e_low / total,
+        "mid": e_mid / total,
+        "high": e_high / total,
+    }
+
+
+def wavelet_signature_rgb(gray_img01: np.ndarray, target_size: Tuple[int, int]) -> np.ndarray:
+    x, _ = _prepare_for_wavelet(gray_img01)
+    c = _decompose_l2(x)
+
+    low_map = cv2.resize(_norm01(c["ll2"]), target_size, interpolation=cv2.INTER_LINEAR)
+    mid_raw = np.abs(c["lh2"]) + np.abs(c["hl2"]) + np.abs(c["hh2"])
+    mid_map = cv2.resize(_norm01(mid_raw), target_size, interpolation=cv2.INTER_LINEAR)
+    high_raw = np.abs(c["lh1"]) + np.abs(c["hl1"]) + np.abs(c["hh1"])
+    high_map = cv2.resize(_norm01(high_raw), target_size, interpolation=cv2.INTER_LINEAR)
+
+    rgb = np.stack([high_map, mid_map, low_map], axis=2)
+    return (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+def band_ablation_wavelet(
+    infer_fn,
+    preprocess_fn,
+    img_rgb_uint8: np.ndarray,
+) -> Tuple[Dict[str, float], str, np.ndarray]:
+    gray = to_gray(img_rgb_uint8)
+    x, (orig_h, orig_w) = _prepare_for_wavelet(gray)
+    coeffs = _decompose_l2(x)
+
+    p0 = infer_fn(preprocess_fn(img_rgb_uint8))
+    deltas: Dict[str, float] = {}
+
+    for band in ("low", "mid", "high"):
+        c2 = _copy_coeffs(coeffs)
+        if band == "low":
+            c2["ll2"].fill(0.0)
+        elif band == "mid":
+            c2["lh2"].fill(0.0)
+            c2["hl2"].fill(0.0)
+            c2["hh2"].fill(0.0)
+        else:
+            c2["lh1"].fill(0.0)
+            c2["hl1"].fill(0.0)
+            c2["hh1"].fill(0.0)
+
+        restored = _reconstruct_l2(c2)
+        if restored.shape != (orig_h, orig_w):
+            restored = cv2.resize(restored, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+
+        rgb2 = gray01_to_rgb_uint8(restored)
+        pb = infer_fn(preprocess_fn(rgb2))
+        deltas[band] = float(pb - p0)
+
+    dominant = max(deltas.keys(), key=lambda k: abs(deltas[k])) if deltas else "unknown"
+    wavelet_rgb = wavelet_signature_rgb(gray, (orig_w, orig_h))
+    return deltas, dominant, wavelet_rgb
+
+
+def to_png_data_url(img_rgb_uint8: np.ndarray) -> str:
+    ok, buf = cv2.imencode(".png", cv2.cvtColor(img_rgb_uint8, cv2.COLOR_RGB2BGR))
+    if not ok:
+        return ""
+    b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def _round6(value: float) -> float:
+    return float(round(float(value), 6))
+
+
+def build_evidence_for_face(
+    face_rgb_uint8: np.ndarray,
+    landmarks: np.ndarray,
+    rgb_model: torch.nn.Module,
+    freq_model: torch.nn.Module,
+    cam: GradCAM,
+    fusion_w: float = 0.5,
+    evidence_level: str = "mvp",
+) -> Dict[str, Any]:
+    x_rgb = rgb_preprocess_tensor(face_rgb_uint8)
+    x_freq = freq_preprocess_tensor(face_rgb_uint8)
+
+    p_rgb = infer_prob_binary(rgb_model, x_rgb)
+    p_freq = infer_prob_binary(freq_model, x_freq)
+    p_final = fuse_probs(p_rgb, p_freq, w=fusion_w)
+
+    heat = cam(x_rgb, class_idx=1)
+    overlay = overlay_cam(face_rgb_uint8, heat, alpha=0.45)
+
+    h, w, _ = face_rgb_uint8.shape
+    masks = build_region_masks_from_5pt(landmarks, h, w)
+    region_imp = region_importance_from_heatmap(heat, masks)
+    ranked = sorted(region_imp.keys(), key=lambda k: region_imp[k], reverse=True)
+
+    spatial_notes = ["insightface_aligned_crop"]
+    occ_deltas: Dict[str, float] = {}
+    if evidence_level != "off" and p_final >= 0.60:
+        occ_deltas = occlusion_validate_topk(
+            infer_fn=lambda t: infer_prob_binary(rgb_model, t),
+            preprocess_fn=rgb_preprocess_tensor,
+            img_rgb_uint8=face_rgb_uint8,
+            region_masks=masks,
+            ranked_regions=ranked,
+            k=2,
+        )
+    elif evidence_level == "off":
+        spatial_notes.append("occlusion_skipped:evidence_off")
+    else:
+        spatial_notes.append("occlusion_skipped:low_fake_prob")
+
+    regions_topk = []
+    for r in ranked[:3]:
+        regions_topk.append(
+            {
+                "region": r,
+                "importance_cam": _round6(region_imp[r]),
+                "delta_occlusion": _round6(occ_deltas[r]) if r in occ_deltas else None,
+            }
+        )
+
+    outside_face_ratio = estimate_outside_face_ratio(heat, landmarks)
+    top_importance = regions_topk[0]["importance_cam"] if regions_topk else 0.0
+    localization_conf = estimate_localization_confidence(float(top_importance), float(outside_face_ratio))
+
+    band_deltas: Dict[str, float] = {}
+    dominant_band = "unknown"
+    gray = to_gray(face_rgb_uint8)
+    spectrum_rgb = wavelet_signature_rgb(gray, (face_rgb_uint8.shape[1], face_rgb_uint8.shape[0]))
+    energy_ratio_map = wavelet_band_energy_ratio(gray)
+    dominant_energy_band = (
+        max(energy_ratio_map.keys(), key=lambda k: energy_ratio_map[k]) if energy_ratio_map else "unknown"
+    )
+
+    freq_notes = ["wavelet_haar_l2_ablation"]
+    if evidence_level != "off" and p_final >= 0.60:
+        band_deltas, dominant_band, spectrum_rgb = band_ablation_wavelet(
+            infer_fn=lambda t: infer_prob_binary(freq_model, t),
+            preprocess_fn=freq_preprocess_tensor,
+            img_rgb_uint8=face_rgb_uint8,
+        )
+    elif evidence_level == "off":
+        freq_notes.append("ablation_skipped:evidence_off")
+    else:
+        freq_notes.append("ablation_skipped:low_fake_prob")
+
+    band_order = ["low", "mid", "high"]
+    band_list = []
+    for b in band_order:
+        if b in band_deltas:
+            band_list.append({"band": b, "delta_fake_prob": _round6(band_deltas[b])})
+    band_energy = []
+    for b in band_order:
+        if b in energy_ratio_map:
+            band_energy.append({"band": b, "energy_ratio": _round6(energy_ratio_map[b])})
+
+    assets = {
+        "face_crop_url": to_png_data_url(face_rgb_uint8),
+        "cam_overlay_url": to_png_data_url(overlay),
+        "spectrum_url": to_png_data_url(spectrum_rgb),
+    }
+
+    evidence = {
+        "spatial": {
+            "regions_topk": regions_topk,
+            "outside_face_ratio": _round6(outside_face_ratio),
+            "localization_confidence": localization_conf,
+            "notes": spatial_notes,
+        },
+        "frequency": {
+            "band_ablation": band_list,
+            "dominant_band": dominant_band,
+            "band_energy": band_energy,
+            "dominant_energy_band": dominant_energy_band,
+            "method": "wavelet_haar_l2",
+            "notes": freq_notes,
+        },
+    }
+
+    return {
+        "score": {"p_rgb": _round6(p_rgb), "p_freq": _round6(p_freq), "p_final": _round6(p_final)},
+        "assets": assets,
+        "evidence": evidence,
+    }
+
+
+def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> Dict[str, Any]:
+    spatial = evidence.get("spatial", {})
+    freq = evidence.get("frequency", {})
+
+    top = spatial.get("regions_topk", [])[:2]
+    dom = str(freq.get("dominant_band", "unknown"))
+    band_map = {x["band"]: x["delta_fake_prob"] for x in freq.get("band_ablation", []) if "band" in x}
+    energy_map = {x["band"]: x["energy_ratio"] for x in freq.get("band_energy", []) if "band" in x}
+    energy_dom = str(freq.get("dominant_energy_band", "unknown"))
+
+    fake_prob = float(score.get("p_final", 0.0))
+    fake_prob = max(0.0, min(1.0, fake_prob))
+    is_fake_mode = fake_prob >= 0.5
+
+    verdict = "조작 가능성이 높습니다." if is_fake_mode else "진본 가능성이 높습니다."
+    summary = f"공간/주파수 근거를 종합했을 때 {verdict}"
+
+    spatial_findings = []
+    for item in top:
+        region = str(item.get("region", "face"))
+        importance = float(item.get("importance_cam", 0.0))
+        claim = f"{region} 부위가 판별 근거로 크게 반영되었습니다."
+        evidence_txt = f"CAM {importance:.2f}"
+        delta = item.get("delta_occlusion")
+        if delta is not None:
+            delta_f = float(delta) * 100.0
+            direction = "증가" if delta_f > 0 else ("감소" if delta_f < 0 else "변화 거의 없음")
+            evidence_txt += f", occlusion 시 fake 확률 {abs(delta_f):.1f}% {direction}"
+        spatial_findings.append({"claim": claim, "evidence": evidence_txt})
+
+    if not spatial_findings:
+        spatial_findings.append(
+            {
+                "claim": "얼굴 전반 패턴을 기반으로 판별했습니다.",
+                "evidence": "부위별 상위 근거가 제한되어 전체 정보를 활용했습니다.",
+            }
+        )
+
+    frequency_findings = []
+    if dom in band_map:
+        delta_f = float(band_map[dom]) * 100.0
+        direction = "증가" if delta_f > 0 else ("감소" if delta_f < 0 else "변화 거의 없음")
+        frequency_findings.append(
+            {
+                "claim": f"{dom} 대역이 예측에 민감하게 작용했습니다.",
+                "evidence": f"{dom} 제거 시 fake 확률 {abs(delta_f):.1f}% {direction}",
+            }
+        )
+    else:
+        frequency_findings.append(
+            {
+                "claim": "대역 제거 실험의 변화가 제한적이었습니다.",
+                "evidence": "band ablation 변화량이 작거나 계산되지 않았습니다.",
+            }
+        )
+
+    low = float(energy_map.get("low", 0.0)) * 100.0
+    mid = float(energy_map.get("mid", 0.0)) * 100.0
+    high = float(energy_map.get("high", 0.0)) * 100.0
+    frequency_findings.append(
+        {
+            "claim": f"에너지 우세 대역은 {energy_dom} 입니다.",
+            "evidence": f"low {low:.1f}%, mid {mid:.1f}%, high {high:.1f}%",
+        }
+    )
+
+    if dom != "unknown" and energy_dom != "unknown":
+        consistency = "일관" if dom == energy_dom else "불일치 가능성"
+        frequency_findings.append(
+            {
+                "claim": "우세 대역 일치 여부",
+                "evidence": f"dominant_band={dom}, dominant_energy_band={energy_dom}, 판정={consistency}",
+            }
+        )
+
+    return {
+        "summary": summary,
+        "spatial_findings": spatial_findings[:4],
+        "frequency_findings": frequency_findings[:4],
+        "next_steps": [
+            "다른 각도와 조명 조건의 이미지로 교차 검증하세요.",
+            "가능하면 짧은 동영상도 함께 분석해 일관성을 확인하세요.",
+        ],
+        "caveats": [
+            "강한 압축이나 저해상도는 오탐을 유발할 수 있습니다.",
+            "자동 분석 결과는 보조 지표이며 최종 판정이 아닙니다.",
+        ],
     }

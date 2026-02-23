@@ -71,6 +71,11 @@ const DonutChart = ({ score, label, color = '#00f2ff' }) => {
 async function analyzeWithFastAPI(file, fileType) {
   const formData = new FormData();
   formData.append('file', file);
+  if (fileType !== 'video') {
+    formData.append('explain', 'true');
+    formData.append('evidence_level', 'mvp');
+    formData.append('fusion_w', '0.5');
+  }
 
   const endpoint = fileType === 'video' ? '/api/analyze-video' : '/api/analyze';
   const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -99,6 +104,22 @@ function toDataUrl(base64Payload, mimeType = 'image/jpeg') {
     return null;
   }
   return `data:${mimeType};base64,${base64Payload}`;
+}
+
+function toRenderableImageUrl(url) {
+  if (typeof url !== 'string' || url.length === 0) {
+    return null;
+  }
+  if (url.startsWith('data:')) {
+    return url;
+  }
+  if (/^https?:\/\//i.test(url)) {
+    return url;
+  }
+  if (url.startsWith('/')) {
+    return `${API_BASE}${url}`;
+  }
+  return null;
 }
 
 function App() {
@@ -192,7 +213,16 @@ function App() {
 
     try {
       const response = await analyzeWithFastAPI(rawFile, fileType);
-      const data = response?.data || {};
+      const data =
+        response && typeof response === 'object' && response.data && typeof response.data === 'object'
+          ? response.data
+          : response;
+      const isEvidenceFormat =
+        data &&
+        typeof data === 'object' &&
+        data.score &&
+        typeof data.score === 'object' &&
+        Array.isArray(data.faces);
       const videoFrameConfidences = Array.isArray(data.video_frame_confidences)
         ? data.video_frame_confidences
             .map((value) => Number(value))
@@ -211,33 +241,74 @@ function App() {
       const videoRepresentativeConfidence = Number.isFinite(data.video_representative_confidence)
         ? data.video_representative_confidence
         : null;
-      const preprocessed =
-        data.preprocessed && typeof data.preprocessed === 'object'
-          ? {
-              cropImage: toDataUrl(
-                data.preprocessed.face_crop_image_b64,
-                data.preprocessed.mime_type || 'image/jpeg'
-              ),
-            }
-          : null;
+
+      let confidence = null;
+      let pixelScore = null;
+      let freqScore = null;
+      let isFake = null;
+      let pValue = null;
+      let reliability = '';
+      let preprocessed = null;
+      let comment = '';
+
+      if (isEvidenceFormat) {
+        const pFinal = Number(data.score?.p_final);
+        const pRgb = Number(data.score?.p_rgb);
+        const pFreq = Number(data.score?.p_freq);
+
+        confidence = Number.isFinite(pFinal) ? Math.max(0, Math.min(100, pFinal * 100)) : null;
+        pixelScore = Number.isFinite(pRgb) ? Math.max(0, Math.min(100, pRgb * 100)) : null;
+        freqScore = Number.isFinite(pFreq) ? Math.max(0, Math.min(100, pFreq * 100)) : null;
+        isFake = Number.isFinite(confidence) ? confidence >= 50 : null;
+
+        const firstFace = Array.isArray(data.faces) && data.faces.length > 0 ? data.faces[0] : null;
+        const cropImage = toRenderableImageUrl(firstFace?.assets?.face_crop_url);
+        preprocessed = cropImage ? { cropImage } : null;
+
+        const explanationSummary = firstFace?.explanation?.summary;
+        if (typeof explanationSummary === 'string' && explanationSummary.trim().length > 0) {
+          comment = explanationSummary.trim();
+        }
+      } else {
+        confidence = Number.isFinite(data.confidence) ? data.confidence : null;
+        pixelScore = Number.isFinite(data.pixel_score) ? data.pixel_score : null;
+        freqScore = Number.isFinite(data.freq_score) ? data.freq_score : null;
+        isFake = typeof data.is_fake === 'boolean' ? data.is_fake : null;
+        pValue = Number.isFinite(data.p_value) ? data.p_value : null;
+        reliability = data.reliability || '';
+
+        preprocessed =
+          data.preprocessed && typeof data.preprocessed === 'object'
+            ? {
+                cropImage: toDataUrl(
+                  data.preprocessed.face_crop_image_b64,
+                  data.preprocessed.mime_type || 'image/jpeg'
+                ),
+              }
+            : null;
+      }
+
+      if (!comment) {
+        comment =
+          isFake === true
+            ? '[경고] 조작 가능성이 높습니다. 추가 검증을 권장합니다.'
+            : '[판독 완료] 무결성 지표가 정상 범위입니다.';
+      }
 
       setAnalysisResult({
-        confidence: Number.isFinite(data.confidence) ? data.confidence : null,
-        pixelScore: Number.isFinite(data.pixel_score) ? data.pixel_score : null,
-        freqScore: Number.isFinite(data.freq_score) ? data.freq_score : null,
-        isFake: typeof data.is_fake === 'boolean' ? data.is_fake : null,
-        pValue: Number.isFinite(data.p_value) ? data.p_value : null,
-        reliability: data.reliability || '',
+        confidence,
+        pixelScore,
+        freqScore,
+        isFake,
+        pValue,
+        reliability,
         videoMeta: data.video_meta || null,
         videoRepresentativeConfidence,
         videoFrameConfidences,
         videoFramePixelScores,
         videoFrameFreqScores,
         preprocessed,
-        comment:
-          data.is_fake === true
-            ? '[경고] 조작 가능성이 높습니다. 추가 검증을 권장합니다.'
-            : '[판독 완료] 무결성 지표가 정상 범위입니다.',
+        comment,
       });
       stopProgress(100);
     } catch (error) {

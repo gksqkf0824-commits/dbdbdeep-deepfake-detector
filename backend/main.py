@@ -1,8 +1,12 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 import secrets
 import os
 import tempfile
+import uuid
+
+import cv2
+import numpy as np
 
 from model import detector
 from redis_client import redis_db
@@ -15,6 +19,11 @@ from utils import (
     aggregate_scores,
     trimmed_mean_confidence,
     build_analysis_result,
+    detect_faces_with_aligned_crops,
+    get_cam_target_layer,
+    GradCAM,
+    build_evidence_for_face,
+    explain_from_evidence,
 )
 
 app = FastAPI()
@@ -95,6 +104,17 @@ def delete_keys_by_patterns(patterns, batch_size: int = 500) -> int:
     return deleted_total
 
 
+def _validate_evidence_level(level: str) -> str:
+    lv = (level or "mvp").strip().lower()
+    if lv not in {"off", "mvp", "full"}:
+        raise HTTPException(status_code=400, detail="evidence_level은 off/mvp/full 중 하나여야 합니다.")
+    return lv
+
+
+def _safe_score_agg(values):
+    return float(max(values)) if values else 0.0
+
+
 @app.get("/test")
 async def test():
     return {"message": "서버가 정상적으로 작동 중입니다."}
@@ -116,6 +136,98 @@ async def clear_cache():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cache clear error: {e}")
+
+
+@app.post("/api/analyze")
+async def analyze_with_evidence(
+    file: UploadFile = File(...),
+    explain: bool = Form(True),
+    evidence_level: str = Form("mvp"),
+    fusion_w: float = Form(0.5),
+):
+    request_id = str(uuid.uuid4())
+    lv = _validate_evidence_level(evidence_level)
+
+    data = await file.read()
+    img_arr = np.frombuffer(data, np.uint8)
+    bgr = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(status_code=400, detail="이미지 디코딩 실패")
+
+    rgb_model = detector.pixel_model
+    freq_model = detector.freq_model
+    if rgb_model is None or freq_model is None:
+        raise HTTPException(
+            status_code=500,
+            detail="RGB/Frequency 모델 로드 실패: backend/models/*.pth 경로를 확인하세요.",
+        )
+
+    try:
+        faces = detect_faces_with_aligned_crops(
+            image_bgr=bgr,
+            margin=0.15,
+            target_size=224,
+            max_faces=8,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"얼굴 분석 실패: {exc}") from exc
+
+    if not faces:
+        return {
+            "request_id": request_id,
+            "status": "ok",
+            "score": {"p_rgb": 0.0, "p_freq": 0.0, "p_final": 0.0},
+            "faces": [],
+        }
+
+    cam_target_layer = get_cam_target_layer(rgb_model)
+    cam = GradCAM(rgb_model, cam_target_layer)
+
+    faces_out = []
+    p_rgb_list, p_freq_list, p_final_list = [], [], []
+
+    try:
+        for i, face in enumerate(faces):
+            out = build_evidence_for_face(
+                face_rgb_uint8=face["crop_rgb"],
+                landmarks=face["landmarks"],
+                rgb_model=rgb_model,
+                freq_model=freq_model,
+                cam=cam,
+                fusion_w=float(fusion_w),
+                evidence_level=lv,
+            )
+
+            score = out["score"]
+            evidence = out["evidence"]
+            assets = out["assets"]
+
+            p_rgb_list.append(float(score["p_rgb"]))
+            p_freq_list.append(float(score["p_freq"]))
+            p_final_list.append(float(score["p_final"]))
+
+            item = {
+                "face_id": i,
+                "assets": assets,
+                "evidence": evidence,
+            }
+            if explain:
+                item["explanation"] = explain_from_evidence(evidence=evidence, score=score)
+
+            faces_out.append(item)
+    finally:
+        cam.close()
+
+    return {
+        "request_id": request_id,
+        "status": "ok",
+        "score": {
+            "p_rgb": _safe_score_agg(p_rgb_list),
+            "p_freq": _safe_score_agg(p_freq_list),
+            "p_final": _safe_score_agg(p_final_list),
+        },
+        "faces": faces_out,
+    }
 
 
 # =========================

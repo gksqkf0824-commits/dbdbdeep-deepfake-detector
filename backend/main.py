@@ -73,9 +73,44 @@ def store_result_and_make_response(analysis_result: dict, stored_result: dict = 
     }
 
 
+def delete_keys_by_patterns(patterns, batch_size: int = 500) -> int:
+    deleted_total = 0
+
+    for pattern in patterns:
+        batch = []
+        for key in redis_db.scan_iter(match=pattern, count=1000):
+            batch.append(key)
+            if len(batch) >= batch_size:
+                deleted_total += int(redis_db.delete(*batch))
+                batch.clear()
+
+        if batch:
+            deleted_total += int(redis_db.delete(*batch))
+
+    return deleted_total
+
+
 @app.get("/test")
 async def test():
     return {"message": "서버가 정상적으로 작동 중입니다."}
+
+
+@app.post("/clear-cache")
+async def clear_cache():
+    """
+    Redis 캐시 키 삭제.
+    현재는 결과/비디오 캐시를 모두 정리한다.
+    """
+    try:
+        patterns = ["cache:*", "res:*"]
+        deleted_count = delete_keys_by_patterns(patterns)
+        return {
+            "message": "Redis cache cleared",
+            "deleted_keys": deleted_count,
+            "patterns": patterns,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cache clear error: {e}")
 
 
 # =========================
@@ -180,8 +215,6 @@ async def analyze_video(file: UploadFile = File(...)):
         )
         analysis_result["video_representative_confidence"] = round(float(video_score), 2)
         analysis_result["video_frame_confidences"] = [round(float(s), 2) for s in scores]
-        analysis_result["video_frame_pixel_scores"] = [round(float(s), 2) for s in pixel_scores]
-        analysis_result["video_frame_freq_scores"] = [round(float(s), 2) for s in freq_scores]
 
         # 6) video meta + ✅ meta merge (여기가 update(meta) 위치)
         analysis_result["video_meta"] = {

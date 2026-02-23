@@ -1,5 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts';
+import {
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import './index.css';
 
 const API_BASE = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
@@ -12,6 +23,8 @@ const EMPTY_RESULT = {
   pValue: null,
   reliability: '',
   videoMeta: null,
+  videoRepresentativeConfidence: null,
+  videoFrameConfidences: [],
   preprocessed: null,
   comment: '',
 };
@@ -178,21 +191,21 @@ function App() {
     try {
       const response = await analyzeWithFastAPI(rawFile, fileType);
       const data = response?.data || {};
+      const videoFrameConfidences = Array.isArray(data.video_frame_confidences)
+        ? data.video_frame_confidences
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value))
+        : [];
+      const videoRepresentativeConfidence = Number.isFinite(data.video_representative_confidence)
+        ? data.video_representative_confidence
+        : null;
       const preprocessed =
         data.preprocessed && typeof data.preprocessed === 'object'
           ? {
-              detectionImage: toDataUrl(
-                data.preprocessed.face_detection_image_b64,
-                data.preprocessed.mime_type || 'image/jpeg'
-              ),
               cropImage: toDataUrl(
                 data.preprocessed.face_crop_image_b64,
                 data.preprocessed.mime_type || 'image/jpeg'
               ),
-              faceBbox:
-                data.preprocessed.face_bbox && typeof data.preprocessed.face_bbox === 'object'
-                  ? data.preprocessed.face_bbox
-                  : null,
             }
           : null;
 
@@ -204,6 +217,8 @@ function App() {
         pValue: Number.isFinite(data.p_value) ? data.p_value : null,
         reliability: data.reliability || '',
         videoMeta: data.video_meta || null,
+        videoRepresentativeConfidence,
+        videoFrameConfidences,
         preprocessed,
         comment:
           data.is_fake === true
@@ -219,8 +234,15 @@ function App() {
     }
   };
 
-  const displayScore =
-    analysisResult.confidence !== null ? Math.floor(analysisResult.confidence) : null;
+  const mainConfidence =
+    fileType === 'video'
+      ? (analysisResult.videoRepresentativeConfidence ?? analysisResult.confidence)
+      : analysisResult.confidence;
+  const displayScore = mainConfidence !== null ? Math.floor(mainConfidence) : null;
+  const confidenceTrendData = analysisResult.videoFrameConfidences.map((confidence, idx) => ({
+    frame: idx + 1,
+    confidence: Math.max(0, Math.min(100, Number(confidence))),
+  }));
   const verdict =
     analysisResult.isFake === null
       ? '대기'
@@ -296,52 +318,33 @@ function App() {
               <p>추론 사용 프레임: {analysisResult.videoMeta.used_frames}</p>
               <p>추론 실패 프레임: {analysisResult.videoMeta.failed_frames}</p>
               <p>집계 방식: {analysisResult.videoMeta.agg_mode}</p>
+              {Number.isFinite(analysisResult.videoMeta.excluded_low_count) &&
+                Number.isFinite(analysisResult.videoMeta.excluded_high_count) && (
+                  <p>
+                    대표 신뢰도 제외 프레임(하위/상위): {analysisResult.videoMeta.excluded_low_count}/
+                    {analysisResult.videoMeta.excluded_high_count}
+                  </p>
+                )}
             </div>
           )}
 
           {fileType === 'image' && analysisResult.preprocessed && (
             <div className="p-4 bg-black/80 border-l-4 border-[#00f2ff] text-sm space-y-3">
               <h3 className="text-[#00f2ff] text-lg font-bold underline">얼굴 전처리 결과</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="bg-[#121b28] border border-[#00f2ff]/30 p-2">
-                  <p className="text-xs mb-2">얼굴 탐지(ROI)</p>
-                  {analysisResult.preprocessed.detectionImage ? (
-                    <img
-                      src={analysisResult.preprocessed.detectionImage}
-                      alt="얼굴 탐지 결과"
-                      className="w-full aspect-video object-contain bg-black"
-                    />
-                  ) : (
-                    <div className="w-full aspect-video flex items-center justify-center text-gray-600 bg-black">
-                      NO IMAGE
-                    </div>
-                  )}
-                </div>
-
-                <div className="bg-[#121b28] border border-[#00f2ff]/30 p-2">
-                  <p className="text-xs mb-2">얼굴 크롭(224x224)</p>
-                  {analysisResult.preprocessed.cropImage ? (
-                    <img
-                      src={analysisResult.preprocessed.cropImage}
-                      alt="얼굴 크롭 전처리 결과"
-                      className="w-full aspect-square object-contain bg-black"
-                    />
-                  ) : (
-                    <div className="w-full aspect-square flex items-center justify-center text-gray-600 bg-black">
-                      NO IMAGE
-                    </div>
-                  )}
-                </div>
+              <div className="bg-[#121b28] border border-[#00f2ff]/30 p-2">
+                <p className="text-xs mb-2">얼굴 크롭(224x224)</p>
+                {analysisResult.preprocessed.cropImage ? (
+                  <img
+                    src={analysisResult.preprocessed.cropImage}
+                    alt="얼굴 크롭 전처리 결과"
+                    className="w-full max-w-[320px] aspect-square object-contain bg-black mx-auto"
+                  />
+                ) : (
+                  <div className="w-full max-w-[320px] aspect-square flex items-center justify-center text-gray-600 bg-black mx-auto">
+                    NO IMAGE
+                  </div>
+                )}
               </div>
-
-              {analysisResult.preprocessed.faceBbox && (
-                <p className="text-[11px] text-[#00f2ff]/80 font-mono">
-                  bbox: x1={analysisResult.preprocessed.faceBbox.x1}, y1=
-                  {analysisResult.preprocessed.faceBbox.y1}, x2=
-                  {analysisResult.preprocessed.faceBbox.x2}, y2=
-                  {analysisResult.preprocessed.faceBbox.y2}
-                </p>
-              )}
             </div>
           )}
         </section>
@@ -350,7 +353,9 @@ function App() {
           <div className="bg-[#121b28] border-2 border-[#00f2ff]/40 p-10 flex flex-col min-h-[600px] shadow-2xl relative">
             <div className="flex justify-between items-start mb-12">
               <div>
-                <p className="text-[#00f2ff]/60 uppercase font-bold mb-2 tracking-widest">신뢰도</p>
+                <p className="text-[#00f2ff]/60 uppercase font-bold mb-2 tracking-widest">
+                  {fileType === 'video' ? '대표 신뢰도' : '신뢰도'}
+                </p>
                 <div className="flex items-baseline gap-4">
                   <span className="text-9xl font-black italic text-[#00f2ff]">{displayScore ?? '00'}</span>
                   <span className="text-4xl font-bold">%</span>
@@ -412,6 +417,47 @@ function App() {
                 </div>
               </div>
             </div>
+
+            {fileType === 'video' && confidenceTrendData.length > 0 && (
+              <div className="mt-8 border-2 border-[#00f2ff]/20 p-4 bg-black/50">
+                <p className="text-sm mb-3 text-[#00f2ff] font-bold border-l-4 border-[#00f2ff] pl-3">
+                  VIDEO CONFIDENCE TREND
+                </p>
+                <div className="h-[220px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={confidenceTrendData} margin={{ top: 8, right: 12, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2f40" />
+                      <XAxis
+                        dataKey="frame"
+                        stroke="#00f2ff"
+                        tick={{ fontSize: 10, fill: '#7dd3fc' }}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        domain={[0, 100]}
+                        stroke="#00f2ff"
+                        tick={{ fontSize: 10, fill: '#7dd3fc' }}
+                        tickLine={false}
+                      />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: '#0a0e14', border: '1px solid #00f2ff' }}
+                        labelStyle={{ color: '#00f2ff' }}
+                        formatter={(value) => [`${Number(value).toFixed(2)}%`, '신뢰도']}
+                        labelFormatter={(label) => `프레임 #${label}`}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="confidence"
+                        stroke="#00f2ff"
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4, stroke: '#00f2ff', fill: '#0a0e14' }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
 
             <div className="mt-8 text-xs font-mono opacity-70 border-t border-[#00f2ff]/20 pt-3">
               <span>

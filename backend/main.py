@@ -11,9 +11,9 @@ from utils import (
     sha256_bytes,
     redis_get_json,
     redis_set_json,
-    video_to_sampled_frames_per_second,
-    frame_to_jpeg_bytes,
+    video_to_uniform_sampled_frames,
     aggregate_scores,
+    trimmed_mean_confidence,
     build_analysis_result,
 )
 
@@ -45,13 +45,15 @@ REAL_MEAN = 15.0
 REAL_STD = 8.0
 
 # Video sampling
-VIDEO_SECONDS_STEP = 1.0    # 1초마다 1프레임
-VIDEO_MAX_SIDE = 640        # 긴 변 기준 다운스케일
-VIDEO_MAX_FRAMES_CAP = 60   # 너무 긴 영상 폭주 방지
+VIDEO_MAX_SIDE = 640
+VIDEO_MIN_FRAMES = 12
+VIDEO_MAX_FRAMES_CAP = 48
+VIDEO_FRAMES_PER_MINUTE = 24
 
 # Aggregation
 AGG_MODE_VIDEO = "mean"
 TOPK = 5
+VIDEO_TRIM_RATIO = 0.10
 
 # Redis TTL
 RESULT_TTL_SEC = 3600
@@ -111,9 +113,10 @@ async def analyze_video(file: UploadFile = File(...)):
     # 0) bytes read + hash
     content = await file.read()
     video_hash = sha256_bytes(content)
+    video_cache_key = f"cache:video:{video_hash}"
 
     # 1) cache hit
-    cached = redis_get_json(redis_db, f"cache:video:{video_hash}")
+    cached = redis_get_json(redis_db, video_cache_key)
     if cached is not None:
         return store_result_and_make_response(cached)
 
@@ -126,12 +129,13 @@ async def analyze_video(file: UploadFile = File(...)):
             tmp_path = tmp.name
             tmp.write(content)
 
-        # 3) sequential sampling per second
-        frames, meta = video_to_sampled_frames_per_second(
+        # 3) full-span uniform sampling (전체 구간 대표 프레임)
+        frames, meta = video_to_uniform_sampled_frames(
             tmp_path,
-            seconds_step=VIDEO_SECONDS_STEP,
             max_side=VIDEO_MAX_SIDE,
+            min_frames=VIDEO_MIN_FRAMES,
             max_frames=VIDEO_MAX_FRAMES_CAP,
+            frames_per_minute=VIDEO_FRAMES_PER_MINUTE,
         )
         if len(frames) == 0:
             raise HTTPException(status_code=400, detail="비디오에서 프레임을 추출하지 못했습니다.")
@@ -142,9 +146,8 @@ async def analyze_video(file: UploadFile = File(...)):
 
         for fr in frames:
             try:
-                jpg_bytes = frame_to_jpeg_bytes(fr, quality=90)
-                score, p_score, f_score, _ = detector.predict(
-                    jpg_bytes,
+                score, p_score, f_score, _ = detector.predict_from_bgr(
+                    fr,
                     include_preprocess=False,
                 )
                 scores.append(score)
@@ -160,8 +163,11 @@ async def analyze_video(file: UploadFile = File(...)):
                 detail=f"모든 프레임 추론 실패 (sampled={len(frames)}, failed={failed})."
             )
 
-        # 5) aggregate (topk_mean)
-        video_score = aggregate_scores(scores, mode=AGG_MODE_VIDEO, topk=TOPK)
+        # 5) aggregate
+        video_score, trimmed_meta = trimmed_mean_confidence(
+            scores,
+            trim_ratio=VIDEO_TRIM_RATIO,
+        )
         video_pixel = aggregate_scores(pixel_scores, mode=AGG_MODE_VIDEO, topk=TOPK)
         video_freq  = aggregate_scores(freq_scores, mode=AGG_MODE_VIDEO, topk=TOPK)
 
@@ -172,18 +178,22 @@ async def analyze_video(file: UploadFile = File(...)):
             video_score, video_pixel, video_freq,
             real_mean=REAL_MEAN, real_std=REAL_STD
         )
+        analysis_result["video_representative_confidence"] = round(float(video_score), 2)
+        analysis_result["video_frame_confidences"] = [round(float(s), 2) for s in scores]
 
         # 6) video meta + ✅ meta merge (여기가 update(meta) 위치)
         analysis_result["video_meta"] = {
             "used_frames": len(scores),
             "failed_frames": failed,
-            "agg_mode": AGG_MODE_VIDEO,
+            "agg_mode": "trimmed_mean_10pct",
+            "pixel_freq_agg_mode": AGG_MODE_VIDEO,
             "topk": TOPK,
         }
+        analysis_result["video_meta"].update(trimmed_meta)
         analysis_result["video_meta"].update(meta)
 
         # 7) cache store
-        redis_set_json(redis_db, f"cache:video:{video_hash}", analysis_result, ex=CACHE_TTL_SEC)
+        redis_set_json(redis_db, video_cache_key, analysis_result, ex=CACHE_TTL_SEC)
 
         return store_result_and_make_response(analysis_result)
 

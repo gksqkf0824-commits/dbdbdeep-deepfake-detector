@@ -1,6 +1,6 @@
 import os
 import base64
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
@@ -233,7 +233,7 @@ class DeepfakeDetectorEnsemble:
         self,
         img_bgr: np.ndarray,
         margin: float = 0.15,
-    ) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
+    ) -> np.ndarray:
         """
         RetinaFace bbox -> square+margin -> crop -> padding resize(224)
         """
@@ -255,7 +255,7 @@ class DeepfakeDetectorEnsemble:
             raise ValueError("Invalid crop region")
 
         crop_224 = resize_with_padding(crop, target_size=224)
-        return crop_224, (x1, y1, x2, y2)
+        return crop_224
 
     def _encode_bgr_to_base64_jpeg(
         self,
@@ -284,26 +284,10 @@ class DeepfakeDetectorEnsemble:
 
     def _build_preprocessed_payload(
         self,
-        original_bgr: np.ndarray,
-        face_bbox: Tuple[int, int, int, int],
         face_crop_224_bgr: np.ndarray,
     ) -> Dict[str, Any]:
-        x1, y1, x2, y2 = face_bbox
-        detected_bgr = original_bgr.copy()
-
-        cv2.rectangle(detected_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
         return {
             "mime_type": "image/jpeg",
-            "face_bbox": {
-                "x1": x1,
-                "y1": y1,
-                "x2": x2,
-                "y2": y2,
-            },
-            "face_detection_image_b64": self._encode_bgr_to_base64_jpeg(
-                detected_bgr, quality=85, max_side=768
-            ),
             "face_crop_image_b64": self._encode_bgr_to_base64_jpeg(
                 face_crop_224_bgr, quality=90, max_side=None
             ),
@@ -313,16 +297,9 @@ class DeepfakeDetectorEnsemble:
             },
         }
 
-    def predict(self, image_bytes: bytes, include_preprocess: bool = False):
-        """
-        return:
-          avg_conf(real-confidence), pixel_real_conf, freq_real_conf, preprocessed_payload
-        """
-        # 1) bytes -> BGR
-        img_bgr = self._decode_image_bytes_to_bgr(image_bytes)
-
-        # 2) face crop (224,224) in BGR
-        face_224_bgr, face_bbox = self._extract_face_crop224_bgr(img_bgr, margin=0.15)
+    def _predict_from_bgr_core(self, img_bgr: np.ndarray, include_preprocess: bool = False):
+        # 1) face crop (224,224) in BGR
+        face_224_bgr = self._extract_face_crop224_bgr(img_bgr, margin=0.15)
 
         # -------------------
         # 3) Pixel 입력 (RGB 3ch + ImageNet norm)
@@ -368,11 +345,29 @@ class DeepfakeDetectorEnsemble:
 
         preprocessed_payload = None
         if include_preprocess:
-            preprocessed_payload = self._build_preprocessed_payload(
-                img_bgr, face_bbox, face_224_bgr
-            )
+            preprocessed_payload = self._build_preprocessed_payload(face_224_bgr)
 
         return round(avg_conf, 2), round(s_p, 2), round(s_f, 2), preprocessed_payload
+
+    def predict_from_bgr(self, img_bgr: np.ndarray, include_preprocess: bool = False):
+        """
+        OpenCV BGR 이미지를 직접 받아 추론한다.
+        (비디오 프레임에서 JPEG 재인코딩/디코딩 비용을 제거하기 위한 경로)
+        """
+        if img_bgr is None or not isinstance(img_bgr, np.ndarray):
+            raise ValueError("Invalid BGR image")
+        if img_bgr.ndim != 3 or img_bgr.shape[2] != 3:
+            raise ValueError("Expected BGR image with shape (H, W, 3)")
+
+        return self._predict_from_bgr_core(img_bgr, include_preprocess=include_preprocess)
+
+    def predict(self, image_bytes: bytes, include_preprocess: bool = False):
+        """
+        return:
+          avg_conf(real-confidence), pixel_real_conf, freq_real_conf, preprocessed_payload
+        """
+        img_bgr = self._decode_image_bytes_to_bgr(image_bytes)
+        return self._predict_from_bgr_core(img_bgr, include_preprocess=include_preprocess)
 
 
 # =========================================================

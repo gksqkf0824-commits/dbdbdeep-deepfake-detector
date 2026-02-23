@@ -257,7 +257,7 @@ function App() {
     analysisResult.videoFramePixelScores.length,
     analysisResult.videoFrameFreqScores.length
   );
-  let confidenceTrendData = Array.from({ length: trendLength }, (_, idx) => ({
+  const confidenceTrendData = Array.from({ length: trendLength }, (_, idx) => ({
     frame: idx + 1,
     pixelConfidence:
       idx < analysisResult.videoFramePixelScores.length
@@ -268,19 +268,7 @@ function App() {
         ? Math.max(0, Math.min(100, Number(analysisResult.videoFrameFreqScores[idx])))
         : null,
   }));
-  if (
-    confidenceTrendData.length === 0 &&
-    Number.isFinite(analysisResult.pixelScore) &&
-    Number.isFinite(analysisResult.freqScore)
-  ) {
-    confidenceTrendData = [
-      {
-        frame: 1,
-        pixelConfidence: Math.max(0, Math.min(100, Number(analysisResult.pixelScore))),
-        freqConfidence: Math.max(0, Math.min(100, Number(analysisResult.freqScore))),
-      },
-    ];
-  }
+  const hasTrendLine = confidenceTrendData.length >= 2;
   const verdict =
     analysisResult.isFake === null
       ? '대기'
@@ -456,7 +444,7 @@ function App() {
               </div>
             </div>
 
-            {fileType === 'video' && analysisResult.confidence !== null && (
+            {fileType === 'video' && analysisResult.confidence !== null && hasTrendLine && (
               <div className="mt-8 border-2 border-[#00f2ff]/20 p-4 bg-black/50">
                 <p className="text-sm mb-3 text-[#00f2ff] font-bold border-l-4 border-[#00f2ff] pl-3">
                   VIDEO PIXEL/FREQUENCY TREND
@@ -505,6 +493,11 @@ function App() {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
+              </div>
+            )}
+            {fileType === 'video' && analysisResult.confidence !== null && !hasTrendLine && (
+              <div className="mt-8 border-2 border-[#00f2ff]/20 p-4 bg-black/50 text-sm text-[#00f2ff]/70">
+                라인 그래프를 그리기 위한 유효 프레임이 부족합니다.
               </div>
             )}
 

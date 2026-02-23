@@ -73,6 +73,11 @@ def store_result_and_make_response(analysis_result: dict, stored_result: dict = 
     }
 
 
+def has_frame_series(payload: dict, key: str) -> bool:
+    values = payload.get(key)
+    return isinstance(values, list) and len(values) >= 2
+
+
 def delete_keys_by_patterns(patterns, batch_size: int = 500) -> int:
     deleted_total = 0
 
@@ -152,7 +157,7 @@ async def analyze_video(file: UploadFile = File(...)):
 
     # 1) cache hit
     cached = redis_get_json(redis_db, video_cache_key)
-    if cached is not None:
+    if cached is not None and has_frame_series(cached, "video_frame_pixel_scores") and has_frame_series(cached, "video_frame_freq_scores"):
         return store_result_and_make_response(cached)
 
     suffix = os.path.splitext(file.filename or "")[1] or ".mp4"
@@ -215,6 +220,8 @@ async def analyze_video(file: UploadFile = File(...)):
         )
         analysis_result["video_representative_confidence"] = round(float(video_score), 2)
         analysis_result["video_frame_confidences"] = [round(float(s), 2) for s in scores]
+        analysis_result["video_frame_pixel_scores"] = [round(float(s), 2) for s in pixel_scores]
+        analysis_result["video_frame_freq_scores"] = [round(float(s), 2) for s in freq_scores]
 
         # 6) video meta + ✅ meta merge (여기가 update(meta) 위치)
         analysis_result["video_meta"] = {

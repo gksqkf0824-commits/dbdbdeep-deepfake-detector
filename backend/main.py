@@ -139,6 +139,8 @@ async def clear_cache():
 
 
 @app.post("/api/analyze")
+@app.post("/api/analyze-evidence")
+@app.post("/analyze-evidence")
 async def analyze_with_evidence(
     file: UploadFile = File(...),
     explain: bool = Form(True),
@@ -260,6 +262,7 @@ async def analyze_image(file: UploadFile = File(...)):
 # =========================
 # Video inference
 # =========================
+@app.post("/api/analyze-video")
 @app.post("/analyze-video")
 async def analyze_video(file: UploadFile = File(...)):
     # 0) bytes read + hash

@@ -126,7 +126,7 @@ async function analyzeWithFastAPI(file, fileType) {
     formData.append('fusion_w', '0.5');
   }
 
-  const endpoint = fileType === 'video' ? '/analyze-video' : '/api/analyze';
+  const endpoint = fileType === 'video' ? '/api/analyze-video' : '/api/analyze-evidence';
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
     body: formData,

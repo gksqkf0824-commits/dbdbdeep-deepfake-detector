@@ -160,6 +160,7 @@ def _analyze_evidence_bytes(
             "score": {"p_rgb": 0.0, "p_freq": 0.0, "p_final": 0.0},
             "faces": [],
             "ai_comment": "얼굴이 감지되지 않아 판독 근거를 생성하지 못했습니다. 다른 각도/해상도 이미지로 다시 시도해 주세요.",
+            "ai_comment_source": "fallback:no_face",
         }
 
     cam_target_layer = get_cam_target_layer(rgb_model)
@@ -205,10 +206,12 @@ def _analyze_evidence_bytes(
         cam.close()
 
     ai_comment = ""
+    ai_comment_source = "rule_based"
     if explain and faces_out:
         first_explanation = faces_out[0].get("explanation", {})
         if isinstance(first_explanation, dict):
             ai_comment = str(first_explanation.get("summary", "")).strip()
+            ai_comment_source = str(first_explanation.get("summary_source", "rule_based")).strip() or "rule_based"
 
     return {
         "request_id": request_id,
@@ -220,6 +223,7 @@ def _analyze_evidence_bytes(
         },
         "faces": faces_out,
         "ai_comment": ai_comment,
+        "ai_comment_source": ai_comment_source,
     }
 
 
@@ -427,12 +431,14 @@ async def analyze_video(file: UploadFile = File(...)):
             freq_scores=[float(s) for s in freq_scores],
             is_fake=bool(analysis_result.get("is_fake")) if isinstance(analysis_result.get("is_fake"), bool) else None,
         )
+        ai_comment_source = "openai" if ai_comment else "rule_based"
         if not ai_comment:
             if bool(analysis_result.get("is_fake")):
                 ai_comment = "분석 결과, 조작 가능성이 상대적으로 높게 관측되었습니다. 세부 근거를 함께 확인해 주세요."
             else:
                 ai_comment = "분석 결과, 원본 가능성이 상대적으로 높게 관측되었습니다. 세부 근거를 함께 확인해 주세요."
         analysis_result["ai_comment"] = ai_comment
+        analysis_result["ai_comment_source"] = ai_comment_source
 
         # 7) cache store
         redis_set_json(redis_db, video_cache_key, analysis_result, ex=CACHE_TTL_SEC)

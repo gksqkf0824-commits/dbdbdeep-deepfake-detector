@@ -7,6 +7,7 @@ export default function UploadCard({
   loading,
   hasResult = false,
   aiComment = "",
+  aiCommentSource = "",
   imageUrl,
   onReset,
   onModeChange,
@@ -42,6 +43,14 @@ export default function UploadCard({
     if (cleaned.length > 0) return cleaned;
     if (hasResult) return "분석이 완료되었습니다. 결과 패널의 상세 근거를 함께 확인해보세요.";
     return defaultComment;
+  })();
+
+  const sourceLabel = (() => {
+    const source = String(aiCommentSource || "").trim().toLowerCase();
+    if (!source) return "";
+    if (source.startsWith("openai")) return "생성: OpenAI LLM";
+    if (source.startsWith("fallback")) return "생성: Fallback";
+    return "생성: Rule Based";
   })();
 
   const onClickPrimary = () => {
@@ -172,8 +181,11 @@ export default function UploadCard({
 
       {/* Comment Box */}
       <div className="mt-5 bg-slate-50 border border-gray-200 rounded-lg p-4 flex-shrink-0">
-        <div className="font-semibold text-slate-800 mb-2">
-          AI 코멘트
+        <div className="flex items-center justify-between mb-2">
+          <div className="font-semibold text-slate-800">AI 코멘트</div>
+          {hasResult && sourceLabel && (
+            <div className="text-[11px] text-slate-500 font-medium">{sourceLabel}</div>
+          )}
         </div>
         <div className="text-sm text-slate-500 leading-relaxed whitespace-pre-line">
           {commentText}

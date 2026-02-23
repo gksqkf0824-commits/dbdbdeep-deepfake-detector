@@ -1401,6 +1401,7 @@ def explain_from_evidence(
             "이번 샘플은 원본 가능성이 우세합니다."
         )
 
+    summary_source = "rule_based"
     if use_openai:
         llm_summary = generate_image_ai_comment(
             fake_prob=fake_prob,
@@ -1413,6 +1414,7 @@ def explain_from_evidence(
         )
         if llm_summary:
             summary = llm_summary
+            summary_source = "openai"
 
     spatial_findings = []
     for item in top:
@@ -1503,6 +1505,7 @@ def explain_from_evidence(
 
     return {
         "summary": summary,
+        "summary_source": summary_source,
         "spatial_findings": spatial_findings[:4],
         "frequency_findings": frequency_findings[:4],
         "next_steps": [

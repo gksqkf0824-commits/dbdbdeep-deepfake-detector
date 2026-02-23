@@ -193,7 +193,7 @@ export default function ExplainPanel({ result }) {
 
       <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
         <div className="text-sm font-semibold text-slate-900 mb-3">분석 근거</div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="flex flex-col gap-3">
           <ListBox
             title="공간 분석"
             items={spatialFindings}
@@ -208,10 +208,10 @@ export default function ExplainPanel({ result }) {
       </div>
 
       <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-        <div className="text-sm font-semibold text-slate-900 mb-3">해석 가이드</div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <ListBox title="주의사항" items={caveats} emptyText="추가 주의사항이 없습니다." />
-          <ListBox title="권장사항" items={nextSteps} emptyText="추가 권장사항이 없습니다." />
+        <div className="text-sm font-semibold text-slate-900 mb-3">참고 사항</div>
+        <div className="flex flex-col gap-3">
+          <ListBox title="⚠️ 주의" items={caveats} emptyText="추가 주의사항이 없습니다." />
+          <ListBox title="✅ 권장" items={nextSteps} emptyText="추가 권장사항이 없습니다." />
         </div>
       </div>
     </div>

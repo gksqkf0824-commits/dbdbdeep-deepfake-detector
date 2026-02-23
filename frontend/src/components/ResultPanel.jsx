@@ -59,11 +59,11 @@ const VideoTimelinePlaceholder = () => {
 };
 
 // 1. 도넛 차트 컴포넌트 
-const ScoreDonutChart = ({ score, color }) => {
-  const safeScore = Math.max(0, Math.min(100, Number(score)));
+const ScoreDonutChart = ({ score, color, cross = false }) => {
+  const safeScore = cross ? 100 : Math.max(0, Math.min(100, Number(score)));
   const data = [
     { name: "Score", value: safeScore },
-    { name: "Rest", value: 100 - safeScore },
+    { name: "Rest", value: cross ? 0 : 100 - safeScore },
   ];
 
   return (
@@ -86,8 +86,17 @@ const ScoreDonutChart = ({ score, color }) => {
         </PieChart>
       </ResponsiveContainer>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-xl font-bold text-slate-700">{safeScore.toFixed(1)}</span>
-        <span className="text-[9px] text-slate-400 font-semibold tracking-wider">SCORE</span>
+        {cross ? (
+          <>
+            <span className="text-3xl font-extrabold text-red-600 leading-none">X</span>
+            <span className="text-[9px] text-red-300 font-semibold tracking-wider">N/A</span>
+          </>
+        ) : (
+          <>
+            <span className="text-xl font-bold text-slate-700">{safeScore.toFixed(1)}</span>
+            <span className="text-[9px] text-slate-400 font-semibold tracking-wider">SCORE</span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -144,8 +153,10 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
   const hasTimelineData = timeline.length > 1;
   const timelineFinal = toFiniteNumber(latestTimeline?.final);
   const isVideo = fileType === "video" || Boolean(result?.videoMeta);
+  const isUndetermined = Boolean(result?.isUndetermined);
 
   const trust = (() => {
+    if (isUndetermined) return null;
     const representative = toFiniteNumber(result?.videoRepresentativeConfidence);
     const rawConfidence = toFiniteNumber(result?.confidence);
 
@@ -171,6 +182,7 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
 
   const badge = (() => {
     if (!result) return { text: "대기", color: "text-slate-400", bg: "bg-slate-100" };
+    if (isUndetermined) return { text: "판별 불가", color: "text-slate-500", bg: "bg-slate-100" };
     if (isFake === true) return { text: "주의 요망", color: "text-red-600", bg: "bg-red-50" };
     if (isFake === false) return { text: "매우 안전", color: "text-emerald-600", bg: "bg-emerald-50" };
     return { text: "판독 완료", color: "text-blue-600", bg: "bg-blue-50" };
@@ -187,7 +199,13 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
         <div className="flex items-center gap-5">
           {/* 💡 전처리된 얼굴 이미지 띄워주는 공간 (새로 추가됨) */}
           <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-slate-50 border border-gray-200 flex-shrink-0 overflow-hidden flex items-center justify-center shadow-sm">
-            {faceImageUrl ? (
+            {isVideo ? (
+              <div className="text-center text-slate-400">
+                <div className="text-2xl mb-1 mt-1">▶</div>
+                <span className="text-[10px] font-bold uppercase tracking-wider block">Video</span>
+                <span className="text-[9px] text-slate-300">Timeline</span>
+              </div>
+            ) : faceImageUrl ? (
               <img src={faceImageUrl} alt="Detected Face" className="w-full h-full object-cover" />
             ) : (
               <div className="text-center text-slate-400">
@@ -202,11 +220,21 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
             <div className="font-semibold text-slate-900 mb-1">
               AI 판별 결과
             </div>
-            <div className="text-4xl sm:text-5xl font-bold text-blue-600 tracking-tight">
-              {trust !== null ? trust.toFixed(2) : "--"}%
+            <div
+              className={`text-4xl sm:text-5xl font-bold tracking-tight ${
+                isUndetermined ? "text-red-600" : "text-blue-600"
+              }`}
+            >
+              {isUndetermined ? "판별 불가" : trust !== null ? `${trust.toFixed(2)}%` : "--%"}
             </div>
             <div className="text-sm text-slate-500 mt-2 font-medium">
-              {result ? (result.reliability ? `신뢰도: ${result.reliability}` : '분석 완료') : "분석 결과가 여기에 표시됩니다."}
+              {result
+                ? isUndetermined
+                  ? "얼굴이 감지되지 않아 판별할 수 없습니다."
+                  : result.reliability
+                    ? `신뢰도: ${result.reliability}`
+                    : "분석 완료"
+                : "분석 결과가 여기에 표시됩니다."}
             </div>
           </div>
         </div>
@@ -265,7 +293,9 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
             <div className="border border-gray-200 rounded-lg p-4 bg-white flex flex-col items-center">
               <div className="font-semibold text-slate-800 w-full mb-3">주파수 분석</div>
               <div className="h-[120px] w-full mb-4">
-                {toFiniteNumber(latestTimeline?.srm) !== null ? (
+                {isUndetermined ? (
+                  <ScoreDonutChart score={100} color="#ef4444" cross />
+                ) : toFiniteNumber(latestTimeline?.srm) !== null ? (
                   <ScoreDonutChart score={latestTimeline.srm} color="#6366f1" />
                 ) : freqScore !== null ? (
                   <ScoreDonutChart score={freqScore} color="#6366f1" />
@@ -281,7 +311,9 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
             <div className="border border-gray-200 rounded-lg p-4 bg-white flex flex-col items-center">
               <div className="font-semibold text-slate-800 w-full mb-3">픽셀 분석</div>
               <div className="h-[120px] w-full mb-4">
-                {toFiniteNumber(latestTimeline?.pixel) !== null ? (
+                {isUndetermined ? (
+                  <ScoreDonutChart score={100} color="#ef4444" cross />
+                ) : toFiniteNumber(latestTimeline?.pixel) !== null ? (
                   <ScoreDonutChart score={latestTimeline.pixel} color="#3b82f6" />
                 ) : pixelScore !== null ? (
                   <ScoreDonutChart score={pixelScore} color="#3b82f6" />

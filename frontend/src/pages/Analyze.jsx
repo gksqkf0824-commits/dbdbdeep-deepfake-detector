@@ -11,12 +11,14 @@ const API_BASE = (process.env.REACT_APP_API_BASE || DEFAULT_API_BASE).replace(/\
 
 const EMPTY_RESULT = {
   requestId: "",
+  isUndetermined: false,
   confidence: null,
   pixelScore: null,
   freqScore: null,
   isFake: null,
   pValue: null,
   reliability: "",
+  aiCommentSource: "",
   videoMeta: null,
   videoRepresentativeConfidence: null,
   videoFrameConfidences: [],
@@ -214,12 +216,14 @@ function parseLegacyResult(response) {
   return {
     ...EMPTY_RESULT,
     requestId: "",
+    isUndetermined: false,
     confidence: Number.isFinite(data.confidence) ? data.confidence : null,
     pixelScore: Number.isFinite(data.pixel_score) ? data.pixel_score : null,
     freqScore: Number.isFinite(data.freq_score) ? data.freq_score : null,
     isFake: inferredIsFake,
     pValue: Number.isFinite(data.p_value) ? data.p_value : null,
     reliability: data.reliability || "",
+    aiCommentSource: String(data.ai_comment_source || "").trim(),
     videoMeta: data.video_meta || null,
     videoRepresentativeConfidence: Number.isFinite(data.video_representative_confidence)
       ? data.video_representative_confidence
@@ -250,12 +254,14 @@ function parseEvidenceResult(response) {
   const faces = Array.isArray(response?.faces) ? response.faces : [];
   const firstFace = faces[0] || {};
   const topLevelComment = String(response?.ai_comment || "").trim();
+  const topLevelSource = String(response?.ai_comment_source || "").trim();
 
   const explanation = firstFace?.explanation || {};
   const spatialEvidence = firstFace?.evidence?.spatial || {};
   const freqEvidence = firstFace?.evidence?.frequency || {};
 
-  const confidence = toRealConfidence(score.p_final);
+  const hasDetectedFace = faces.length > 0;
+  const confidence = hasDetectedFace ? toRealConfidence(score.p_final) : null;
   const isFake = Number.isFinite(confidence) ? confidence < 50 : null;
 
   const cropImage = toRenderableImageUrl(firstFace?.assets?.face_crop_url || "");
@@ -264,12 +270,15 @@ function parseEvidenceResult(response) {
   return {
     ...EMPTY_RESULT,
     requestId: response?.request_id || "",
+    isUndetermined: !hasDetectedFace,
     confidence,
-    pixelScore: toRealConfidence(score.p_rgb),
-    freqScore: toRealConfidence(score.p_freq),
+    pixelScore: hasDetectedFace ? toRealConfidence(score.p_rgb) : null,
+    freqScore: hasDetectedFace ? toRealConfidence(score.p_freq) : null,
     isFake,
     pValue: null,
     reliability: "",
+    aiCommentSource:
+      topLevelSource || String(firstFace?.explanation?.summary_source || "").trim(),
     preprocessed,
     comment:
       topLevelComment ||
@@ -277,8 +286,8 @@ function parseEvidenceResult(response) {
       buildCommonComment({
         isFake,
         confidence,
-        pixelScore: toRealConfidence(score.p_rgb),
-        freqScore: toRealConfidence(score.p_freq),
+        pixelScore: hasDetectedFace ? toRealConfidence(score.p_rgb) : null,
+        freqScore: hasDetectedFace ? toRealConfidence(score.p_freq) : null,
       }),
     topRegions: Array.isArray(spatialEvidence?.regions_topk) ? spatialEvidence.regions_topk : [],
     dominantBand: freqEvidence?.dominant_band || "",
@@ -503,6 +512,11 @@ export default function Analyze() {
     return summary;
   }, [result]);
 
+  const aiCommentSource = useMemo(() => {
+    if (!result) return "";
+    return String(result.aiCommentSource || "").trim();
+  }, [result]);
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-indigo-50 py-10 px-4">
       <div className="max-w-6xl mx-auto space-y-8">
@@ -517,6 +531,7 @@ export default function Analyze() {
             loading={loading}
             hasResult={Boolean(result)}
             aiComment={aiComment}
+            aiCommentSource={aiCommentSource}
             onReset={resetAnalysis}
             onModeChange={onChangeMode}
             onPickFile={onPickFile}

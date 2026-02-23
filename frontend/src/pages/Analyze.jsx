@@ -5,7 +5,9 @@ import UploadCard from "../components/UploadCard";
 import ResultPanel from "../components/ResultPanel";
 import ExplainPanel from "../components/ExplainPanel";
 
-const API_BASE = (process.env.REACT_APP_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
+const DEFAULT_API_BASE =
+  typeof window !== "undefined" ? window.location.origin : "";
+const API_BASE = (process.env.REACT_APP_API_BASE || DEFAULT_API_BASE).replace(/\/$/, "");
 
 const EMPTY_RESULT = {
   requestId: "",

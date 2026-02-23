@@ -180,6 +180,8 @@ async def analyze_video(file: UploadFile = File(...)):
         )
         analysis_result["video_representative_confidence"] = round(float(video_score), 2)
         analysis_result["video_frame_confidences"] = [round(float(s), 2) for s in scores]
+        analysis_result["video_frame_pixel_scores"] = [round(float(s), 2) for s in pixel_scores]
+        analysis_result["video_frame_freq_scores"] = [round(float(s), 2) for s in freq_scores]
 
         # 6) video meta + ✅ meta merge (여기가 update(meta) 위치)
         analysis_result["video_meta"] = {

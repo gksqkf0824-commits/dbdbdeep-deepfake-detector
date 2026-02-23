@@ -25,6 +25,8 @@ const EMPTY_RESULT = {
   videoMeta: null,
   videoRepresentativeConfidence: null,
   videoFrameConfidences: [],
+  videoFramePixelScores: [],
+  videoFrameFreqScores: [],
   preprocessed: null,
   comment: '',
 };
@@ -196,6 +198,16 @@ function App() {
             .map((value) => Number(value))
             .filter((value) => Number.isFinite(value))
         : [];
+      const videoFramePixelScores = Array.isArray(data.video_frame_pixel_scores)
+        ? data.video_frame_pixel_scores
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value))
+        : [];
+      const videoFrameFreqScores = Array.isArray(data.video_frame_freq_scores)
+        ? data.video_frame_freq_scores
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value))
+        : [];
       const videoRepresentativeConfidence = Number.isFinite(data.video_representative_confidence)
         ? data.video_representative_confidence
         : null;
@@ -219,6 +231,8 @@ function App() {
         videoMeta: data.video_meta || null,
         videoRepresentativeConfidence,
         videoFrameConfidences,
+        videoFramePixelScores,
+        videoFrameFreqScores,
         preprocessed,
         comment:
           data.is_fake === true
@@ -239,10 +253,34 @@ function App() {
       ? (analysisResult.videoRepresentativeConfidence ?? analysisResult.confidence)
       : analysisResult.confidence;
   const displayScore = mainConfidence !== null ? Math.floor(mainConfidence) : null;
-  const confidenceTrendData = analysisResult.videoFrameConfidences.map((confidence, idx) => ({
+  const trendLength = Math.max(
+    analysisResult.videoFramePixelScores.length,
+    analysisResult.videoFrameFreqScores.length
+  );
+  let confidenceTrendData = Array.from({ length: trendLength }, (_, idx) => ({
     frame: idx + 1,
-    confidence: Math.max(0, Math.min(100, Number(confidence))),
+    pixelConfidence:
+      idx < analysisResult.videoFramePixelScores.length
+        ? Math.max(0, Math.min(100, Number(analysisResult.videoFramePixelScores[idx])))
+        : null,
+    freqConfidence:
+      idx < analysisResult.videoFrameFreqScores.length
+        ? Math.max(0, Math.min(100, Number(analysisResult.videoFrameFreqScores[idx])))
+        : null,
   }));
+  if (
+    confidenceTrendData.length === 0 &&
+    Number.isFinite(analysisResult.pixelScore) &&
+    Number.isFinite(analysisResult.freqScore)
+  ) {
+    confidenceTrendData = [
+      {
+        frame: 1,
+        pixelConfidence: Math.max(0, Math.min(100, Number(analysisResult.pixelScore))),
+        freqConfidence: Math.max(0, Math.min(100, Number(analysisResult.freqScore))),
+      },
+    ];
+  }
   const verdict =
     analysisResult.isFake === null
       ? '대기'
@@ -418,10 +456,10 @@ function App() {
               </div>
             </div>
 
-            {fileType === 'video' && confidenceTrendData.length > 0 && (
+            {fileType === 'video' && analysisResult.confidence !== null && (
               <div className="mt-8 border-2 border-[#00f2ff]/20 p-4 bg-black/50">
                 <p className="text-sm mb-3 text-[#00f2ff] font-bold border-l-4 border-[#00f2ff] pl-3">
-                  VIDEO CONFIDENCE TREND
+                  VIDEO PIXEL/FREQUENCY TREND
                 </p>
                 <div className="h-[220px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
@@ -442,16 +480,27 @@ function App() {
                       <Tooltip
                         contentStyle={{ backgroundColor: '#0a0e14', border: '1px solid #00f2ff' }}
                         labelStyle={{ color: '#00f2ff' }}
-                        formatter={(value) => [`${Number(value).toFixed(2)}%`, '신뢰도']}
+                        formatter={(value, name) => [
+                          `${Number(value).toFixed(2)}%`,
+                          name === 'pixelConfidence' ? 'Pixel 신뢰도' : 'Frequency 신뢰도',
+                        ]}
                         labelFormatter={(label) => `프레임 #${label}`}
                       />
                       <Line
                         type="monotone"
-                        dataKey="confidence"
+                        dataKey="pixelConfidence"
                         stroke="#00f2ff"
                         strokeWidth={2}
                         dot={false}
                         activeDot={{ r: 4, stroke: '#00f2ff', fill: '#0a0e14' }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="freqConfidence"
+                        stroke="#ff007f"
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4, stroke: '#ff007f', fill: '#0a0e14' }}
                       />
                     </LineChart>
                   </ResponsiveContainer>

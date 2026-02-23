@@ -26,6 +26,7 @@ from utils import (
     GradCAM,
     build_evidence_for_face,
     explain_from_evidence,
+    generate_video_ai_comment,
 )
 
 app = FastAPI()
@@ -146,7 +147,8 @@ def _analyze_evidence_bytes(
             image_bgr=bgr,
             margin=0.15,
             target_size=224,
-            max_faces=8,
+            max_faces=1,
+            prioritize_frontal=True,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"얼굴 분석 실패: {exc}") from exc
@@ -157,6 +159,7 @@ def _analyze_evidence_bytes(
             "status": "ok",
             "score": {"p_rgb": 0.0, "p_freq": 0.0, "p_final": 0.0},
             "faces": [],
+            "ai_comment": "얼굴이 감지되지 않아 판독 근거를 생성하지 못했습니다. 다른 각도/해상도 이미지로 다시 시도해 주세요.",
         }
 
     cam_target_layer = get_cam_target_layer(rgb_model)
@@ -191,11 +194,21 @@ def _analyze_evidence_bytes(
                 "evidence": evidence,
             }
             if explain:
-                item["explanation"] = explain_from_evidence(evidence=evidence, score=score)
+                item["explanation"] = explain_from_evidence(
+                    evidence=evidence,
+                    score=score,
+                    use_openai=(i == 0),
+                )
 
             faces_out.append(item)
     finally:
         cam.close()
+
+    ai_comment = ""
+    if explain and faces_out:
+        first_explanation = faces_out[0].get("explanation", {})
+        if isinstance(first_explanation, dict):
+            ai_comment = str(first_explanation.get("summary", "")).strip()
 
     return {
         "request_id": request_id,
@@ -206,6 +219,7 @@ def _analyze_evidence_bytes(
             "p_final": _safe_score_agg(p_final_list),
         },
         "faces": faces_out,
+        "ai_comment": ai_comment,
     }
 
 
@@ -405,6 +419,20 @@ async def analyze_video(file: UploadFile = File(...)):
         }
         analysis_result["video_meta"].update(trimmed_meta)
         analysis_result["video_meta"].update(meta)
+
+        # 6-1) AI 코멘트 (OpenAI 사용, 실패 시 규칙 기반 fallback)
+        ai_comment = generate_video_ai_comment(
+            final_scores=[float(s) for s in scores],
+            pixel_scores=[float(s) for s in pixel_scores],
+            freq_scores=[float(s) for s in freq_scores],
+            is_fake=bool(analysis_result.get("is_fake")) if isinstance(analysis_result.get("is_fake"), bool) else None,
+        )
+        if not ai_comment:
+            if bool(analysis_result.get("is_fake")):
+                ai_comment = "분석 결과, 조작 가능성이 상대적으로 높게 관측되었습니다. 세부 근거를 함께 확인해 주세요."
+            else:
+                ai_comment = "분석 결과, 원본 가능성이 상대적으로 높게 관측되었습니다. 세부 근거를 함께 확인해 주세요."
+        analysis_result["ai_comment"] = ai_comment
 
         # 7) cache store
         redis_set_json(redis_db, video_cache_key, analysis_result, ex=CACHE_TTL_SEC)

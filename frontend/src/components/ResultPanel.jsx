@@ -20,6 +20,44 @@ const formatAggModeLabel = (mode) => {
     .join(" ");
 };
 
+const VideoTimelinePlaceholder = () => {
+  const xTicks = Array.from({ length: 10 }, (_, idx) => idx + 1);
+
+  return (
+    <div className="w-full h-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+      <div className="relative h-[150px]">
+        {[15, 40, 65, 90].map((top) => (
+          <div
+            key={`grid-${top}`}
+            className="absolute left-0 right-0 border-t border-dashed border-slate-200"
+            style={{ top: `${top}%` }}
+          />
+        ))}
+        <div className="absolute bottom-0 left-0 right-0 border-t border-slate-300" />
+        <div className="absolute -bottom-6 left-0 right-0 flex justify-between text-[10px] text-slate-400">
+          {xTicks.map((value) => (
+            <span key={`tick-${value}`}>{value}</span>
+          ))}
+        </div>
+      </div>
+      <div className="mt-8 flex items-center justify-center gap-4 text-xs text-slate-400 font-medium">
+        <span className="inline-flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-full bg-indigo-300" />
+          주파수(SRM)
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-300" />
+          최종(Final)
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-full bg-blue-300" />
+          픽셀(Pixel)
+        </span>
+      </div>
+    </div>
+  );
+};
+
 // 1. 도넛 차트 컴포넌트 
 const ScoreDonutChart = ({ score, color }) => {
   const safeScore = Math.max(0, Math.min(100, Number(score)));
@@ -103,7 +141,7 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
     .filter((item) => item.pixel !== null || item.srm !== null || item.final !== null);
 
   const latestTimeline = timeline.length > 0 ? timeline[timeline.length - 1] : null;
-  const isMultiData = timeline.length > 1;
+  const hasTimelineData = timeline.length > 1;
   const timelineFinal = toFiniteNumber(latestTimeline?.final);
   const isVideo = fileType === "video" || Boolean(result?.videoMeta);
 
@@ -210,29 +248,14 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
 
       {/* Charts & Images 통합 영역 */}
       <div className="mt-6">
-        {isVideo && isMultiData ? (
+        {isVideo ? (
           <div className="border border-gray-200 rounded-lg p-5 bg-white">
             <div className="font-semibold text-slate-800 mb-4 flex justify-between items-center">
               <span>타임라인 분석 (신뢰도 추이)</span>
               <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded">Video</span>
             </div>
-            <div className="h-[200px] w-full">
-              <VideoTimelineChart data={timeline} />
-            </div>
-          </div>
-        ) : isVideo ? (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="border border-gray-200 rounded-lg p-4 bg-white h-[220px] flex flex-col">
-              <div className="font-semibold text-slate-800">주파수 분석</div>
-              <div className="flex-1 flex items-center justify-center text-3xl text-slate-300 font-semibold">
-                --
-              </div>
-            </div>
-            <div className="border border-gray-200 rounded-lg p-4 bg-white h-[220px] flex flex-col">
-              <div className="font-semibold text-slate-800">픽셀 분석</div>
-              <div className="flex-1 flex items-center justify-center text-3xl text-slate-300 font-semibold">
-                --
-              </div>
+            <div className="h-[240px] w-full">
+              {hasTimelineData ? <VideoTimelineChart data={timeline} /> : <VideoTimelinePlaceholder />}
             </div>
           </div>
         ) : (

@@ -1,6 +1,7 @@
 import json
 import hashlib
 import base64
+import os
 from typing import Dict, Any, Optional, List, Tuple
 
 import numpy as np
@@ -8,6 +9,7 @@ import cv2
 import scipy.stats as stats
 import torch
 import torch.nn.functional as F
+import requests
 
 from model import (
     detector,
@@ -507,11 +509,102 @@ def _map_landmarks_to_crop(
     return local.astype(np.float32)
 
 
+def _face_area_ratio(face_obj, img_w: int, img_h: int) -> float:
+    bbox = np.asarray(getattr(face_obj, "bbox", [0, 0, 0, 0]), dtype=np.float32)
+    bw = max(1.0, float(bbox[2] - bbox[0]))
+    bh = max(1.0, float(bbox[3] - bbox[1]))
+    img_area = max(1.0, float(img_w * img_h))
+    return float((bw * bh) / img_area)
+
+
+def _pose_frontal_score(face_obj) -> Optional[float]:
+    pose = getattr(face_obj, "pose", None)
+    if pose is None:
+        return None
+
+    arr = np.asarray(pose, dtype=np.float32).reshape(-1)
+    if arr.size < 2:
+        return None
+
+    yaw = abs(float(arr[0]))
+    pitch = abs(float(arr[1]))
+    roll = abs(float(arr[2])) if arr.size >= 3 else 0.0
+
+    yaw_score = max(0.0, 1.0 - (yaw / 45.0))
+    pitch_score = max(0.0, 1.0 - (pitch / 30.0))
+    roll_score = max(0.0, 1.0 - (roll / 40.0))
+
+    return float((0.6 * yaw_score) + (0.3 * pitch_score) + (0.1 * roll_score))
+
+
+def _landmark_frontal_score(face_obj) -> float:
+    lm = _extract_landmarks_5pt(face_obj)
+    if lm is None:
+        return 0.5
+
+    le, re, nose, ml, mr = lm[0], lm[1], lm[2], lm[3], lm[4]
+    eye_dist = float(max(np.linalg.norm(le - re), 1e-6))
+
+    eye_center_x = float((le[0] + re[0]) * 0.5)
+    mouth_center_x = float((ml[0] + mr[0]) * 0.5)
+    center_x = (eye_center_x + mouth_center_x) * 0.5
+    nose_center_dev = abs(float(nose[0]) - float(center_x))
+    center_score = max(0.0, 1.0 - (nose_center_dev / (0.35 * eye_dist)))
+
+    nose_to_ml = abs(float(nose[0]) - float(ml[0]))
+    mr_to_nose = abs(float(mr[0]) - float(nose[0]))
+    den = max(nose_to_ml, mr_to_nose, 1e-6)
+    lr_balance = abs(nose_to_ml - mr_to_nose) / den
+    symmetry_score = max(0.0, 1.0 - lr_balance)
+
+    eye_center_y = float((le[1] + re[1]) * 0.5)
+    mouth_center_y = float((ml[1] + mr[1]) * 0.5)
+    y_order_score = 1.0 if (eye_center_y < float(nose[1]) < mouth_center_y) else 0.0
+
+    return float((0.5 * center_score) + (0.4 * symmetry_score) + (0.1 * y_order_score))
+
+
+def _face_frontal_score(face_obj) -> float:
+    pose_score = _pose_frontal_score(face_obj)
+    if pose_score is not None:
+        return float(max(0.0, min(1.0, pose_score)))
+    return float(max(0.0, min(1.0, _landmark_frontal_score(face_obj))))
+
+
+def _rank_faces_by_primary_priority(
+    faces: List[Any],
+    img_w: int,
+    img_h: int,
+) -> List[Any]:
+    if not faces:
+        return []
+
+    scored = []
+    area_ratios = []
+    for f in faces:
+        ar = _face_area_ratio(f, img_w=img_w, img_h=img_h)
+        area_ratios.append(ar)
+        scored.append({"face": f, "area_ratio": ar, "frontal": _face_frontal_score(f)})
+
+    max_area = max(area_ratios) if area_ratios else 1.0
+    max_area = max(max_area, 1e-6)
+
+    for item in scored:
+        area_norm = float(item["area_ratio"] / max_area)
+        frontal = float(item["frontal"])
+        # 큰 얼굴을 우선하되, 비슷한 크기라면 정면성 높은 얼굴 선택.
+        item["priority"] = float((0.8 * area_norm) + (0.2 * frontal))
+
+    scored.sort(key=lambda x: (x["priority"], x["area_ratio"], x["frontal"]), reverse=True)
+    return [x["face"] for x in scored]
+
+
 def detect_faces_with_aligned_crops(
     image_bgr: np.ndarray,
     margin: float = 0.15,
     target_size: int = 224,
     max_faces: int = 8,
+    prioritize_frontal: bool = False,
 ) -> List[Dict[str, np.ndarray]]:
     face_app = getattr(getattr(detector, "face_cropper", None), "app", None)
     if face_app is None:
@@ -521,16 +614,19 @@ def detect_faces_with_aligned_crops(
     if not faces:
         return []
 
-    faces_sorted = sorted(
-        faces,
-        key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])),
-        reverse=True,
-    )
-
     img_h, img_w = image_bgr.shape[:2]
+    if prioritize_frontal:
+        faces_ranked = _rank_faces_by_primary_priority(faces, img_w=img_w, img_h=img_h)
+    else:
+        faces_ranked = sorted(
+            faces,
+            key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])),
+            reverse=True,
+        )
+    limit = max(1, int(max_faces))
     out: List[Dict[str, np.ndarray]] = []
 
-    for face in faces_sorted[:max_faces]:
+    for face in faces_ranked[:limit]:
         bbox = np.asarray(face.bbox, dtype=np.float32)
         square_bbox = make_square_bbox_with_margin(
             bbox.tolist(),
@@ -926,6 +1022,217 @@ def _round6(value: float) -> float:
     return float(round(float(value), 6))
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default)
+
+
+def _normalize_text(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _extract_responses_text(payload: Dict[str, Any]) -> str:
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str):
+        return _normalize_text(output_text)
+    if isinstance(output_text, list):
+        parts = [str(x).strip() for x in output_text if isinstance(x, str)]
+        if parts:
+            return _normalize_text(" ".join(parts))
+
+    parts: List[str] = []
+    for item in payload.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []) or []:
+            if not isinstance(content, dict):
+                continue
+            text = content.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+    return _normalize_text(" ".join(parts))
+
+
+def _extract_chat_text(payload: Dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+
+    message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return _normalize_text(content)
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+        return _normalize_text(" ".join(parts))
+    return ""
+
+
+def _call_openai_comment(system_prompt: str, user_prompt: str, max_output_tokens: int = 200) -> Optional[str]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+    base_url = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip() or "https://api.openai.com/v1").rstrip("/")
+    timeout_sec = _env_float("OPENAI_TIMEOUT_SEC", 20.0)
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        # 우선 Responses API 시도
+        resp = requests.post(
+            f"{base_url}/responses",
+            headers=headers,
+            json={
+                "model": model,
+                "temperature": 0.3,
+                "max_output_tokens": int(max_output_tokens),
+                "input": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            },
+            timeout=timeout_sec,
+        )
+        if resp.ok:
+            text = _extract_responses_text(resp.json())
+            if text:
+                return text
+    except Exception:
+        pass
+
+    try:
+        # 구버전/호환 경로 fallback
+        resp = requests.post(
+            f"{base_url}/chat/completions",
+            headers=headers,
+            json={
+                "model": model,
+                "temperature": 0.3,
+                "max_tokens": int(max_output_tokens),
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            },
+            timeout=timeout_sec,
+        )
+        if resp.ok:
+            text = _extract_chat_text(resp.json())
+            if text:
+                return text
+    except Exception:
+        pass
+
+    return None
+
+
+def generate_image_ai_comment(
+    fake_prob: float,
+    real_prob: float,
+    top_regions: List[str],
+    dominant_band_label: str,
+    energy_low_pct: float,
+    energy_mid_pct: float,
+    energy_high_pct: float,
+) -> Optional[str]:
+    system_prompt = (
+        "너는 딥페이크 판독 결과를 사용자에게 전달하는 한국어 리포터다. "
+        "출력은 1~2문장으로 짧고 자연스럽게 작성하고, 어색한 비유/은유 표현은 금지한다. "
+        "확정 단정 대신 가능성 중심으로 표현한다."
+    )
+
+    region_text = ", ".join(top_regions) if top_regions else "얼굴 핵심 부위"
+    user_prompt = (
+        f"최종 fake 확률 {fake_prob*100:.1f}%, real 확률 {real_prob*100:.1f}%.\n"
+        f"주요 부위: {region_text}\n"
+        f"우세 대역: {dominant_band_label}\n"
+        f"밴드 에너지: low {energy_low_pct:.1f}%, mid {energy_mid_pct:.1f}%, high {energy_high_pct:.1f}%\n"
+        "사용자용 AI 코멘트를 작성해줘. 전문적이되 딱딱하지 않게 작성하고, 의미 없는 수식어는 생략해."
+    )
+    return _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=180)
+
+
+def _series_stats(values: List[float]) -> Optional[Dict[str, float]]:
+    arr = [float(v) for v in values if isinstance(v, (int, float)) and np.isfinite(v)]
+    if not arr:
+        return None
+
+    start = arr[0]
+    mid = arr[(len(arr) - 1) // 2]
+    end = arr[-1]
+    swing = max(arr) - min(arr)
+    drift = end - start
+    trend = "상승" if drift > 3 else ("하강" if drift < -3 else "유지")
+
+    return {
+        "start": float(start),
+        "mid": float(mid),
+        "end": float(end),
+        "swing": float(swing),
+        "drift": float(drift),
+        "trend": trend,
+    }
+
+
+def generate_video_ai_comment(
+    final_scores: List[float],
+    pixel_scores: List[float],
+    freq_scores: List[float],
+    is_fake: Optional[bool],
+) -> Optional[str]:
+    final_stats = _series_stats(final_scores)
+    pixel_stats = _series_stats(pixel_scores)
+    freq_stats = _series_stats(freq_scores)
+    if final_stats is None:
+        return None
+
+    system_prompt = (
+        "너는 딥페이크 영상 판독 결과를 사용자에게 전달하는 한국어 리포터다. "
+        "출력은 1~2문장으로 짧고 자연스럽게 작성한다. "
+        "어색한 비유/은유, 과장, 단정적 표현은 금지한다."
+    )
+
+    verdict = (
+        "조작 가능성 쪽으로 기울었습니다."
+        if is_fake is True
+        else "원본 가능성 쪽으로 기울었습니다."
+        if is_fake is False
+        else "추가 검증이 필요합니다."
+    )
+
+    def _fmt(stats_obj: Optional[Dict[str, float]], label: str) -> str:
+        if not stats_obj:
+            return f"{label}: 데이터 부족"
+        return (
+            f"{label}: 시작 {stats_obj['start']:.1f}%, 중간 {stats_obj['mid']:.1f}%, "
+            f"종료 {stats_obj['end']:.1f}%, 추세 {stats_obj['trend']}, 변동폭 {stats_obj['swing']:.1f}%"
+        )
+
+    user_prompt = (
+        f"{_fmt(final_stats, '최종')}\n"
+        f"{_fmt(pixel_stats, '픽셀')}\n"
+        f"{_fmt(freq_stats, '주파수')}\n"
+        f"판정 방향: {verdict}\n"
+        "사용자에게 보여줄 AI 코멘트를 작성해줘. 이미지 코멘트 톤과 동일하게 간결하고 자연스럽게 작성해."
+    )
+    return _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=180)
+
+
 def build_evidence_for_face(
     face_rgb_uint8: np.ndarray,
     landmarks: np.ndarray,
@@ -1037,7 +1344,11 @@ def build_evidence_for_face(
     }
 
 
-def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> Dict[str, Any]:
+def explain_from_evidence(
+    evidence: Dict[str, Any],
+    score: Dict[str, float],
+    use_openai: bool = True,
+) -> Dict[str, Any]:
     spatial = evidence.get("spatial", {})
     freq = evidence.get("frequency", {})
 
@@ -1069,6 +1380,9 @@ def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> 
     fake_prob = max(0.0, min(1.0, fake_prob))
     real_prob = 1.0 - fake_prob
     is_fake_mode = fake_prob >= 0.5
+    low = float(energy_map.get("low", 0.0)) * 100.0
+    mid = float(energy_map.get("mid", 0.0)) * 100.0
+    high = float(energy_map.get("high", 0.0)) * 100.0
 
     top_regions_kor = [_region(item.get("region", "")) for item in top if item.get("region")]
     region_hint = "얼굴 핵심 부위"
@@ -1078,14 +1392,27 @@ def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> 
     band_hint = _band(dom if dom != "unknown" else energy_dom)
     if is_fake_mode:
         summary = (
-            f"겉보기는 자연스러워도 {region_hint}의 결이 살짝 박자를 놓치고 "
-            f"{band_hint} 대역 신호가 흔들려, 이번 샘플은 조작 가능성이 높게 관측됩니다."
+            f"{region_hint}에서 미세 경계와 질감의 불연속이 관측되고 "
+            f"{band_hint} 대역 신호 편차도 함께 나타나, 이번 샘플은 조작 가능성이 높게 관측됩니다."
         )
     else:
         summary = (
-            f"{region_hint}과 {band_hint} 대역 흐름이 같은 리듬으로 맞물려, "
+            f"{region_hint}의 질감 흐름과 {band_hint} 대역 분포가 전반적으로 일관되어, "
             "이번 샘플은 원본 가능성이 우세합니다."
         )
+
+    if use_openai:
+        llm_summary = generate_image_ai_comment(
+            fake_prob=fake_prob,
+            real_prob=real_prob,
+            top_regions=top_regions_kor,
+            dominant_band_label=band_hint,
+            energy_low_pct=low,
+            energy_mid_pct=mid,
+            energy_high_pct=high,
+        )
+        if llm_summary:
+            summary = llm_summary
 
     spatial_findings = []
     for item in top:
@@ -1140,9 +1467,6 @@ def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> 
             }
         )
 
-    low = float(energy_map.get("low", 0.0)) * 100.0
-    mid = float(energy_map.get("mid", 0.0)) * 100.0
-    high = float(energy_map.get("high", 0.0)) * 100.0
     frequency_findings.append(
         {
             "claim": f"에너지 우세 대역은 {_band(energy_dom)}입니다.",

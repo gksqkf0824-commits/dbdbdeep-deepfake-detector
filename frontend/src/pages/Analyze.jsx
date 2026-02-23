@@ -59,66 +59,118 @@ function toRenderableImageUrl(url) {
   return null;
 }
 
-function buildLegacyComment(data, timeline = []) {
-  const confidence = Number(data?.confidence);
-  const pixel = Number(data?.pixel_score);
-  const freq = Number(data?.freq_score);
-  const isFake = typeof data?.is_fake === "boolean" ? data.is_fake : null;
-  const isVideoPayload =
-    Array.isArray(data?.video_frame_confidences) ||
-    Array.isArray(data?.video_frame_pixel_scores) ||
-    Array.isArray(data?.video_frame_freq_scores);
-
-  if (isVideoPayload) {
-    const finalSeries = timeline
-      .map((item) => Number(item?.final))
-      .filter((v) => Number.isFinite(v));
-
-    if (finalSeries.length > 0) {
-      const start = finalSeries[0];
-      const mid = finalSeries[Math.floor((finalSeries.length - 1) / 2)];
-      const end = finalSeries[finalSeries.length - 1];
-      const max = Math.max(...finalSeries);
-      const min = Math.min(...finalSeries);
-      const swing = Math.max(0, max - min);
-      const drift = end - start;
-
-      const trend =
-        drift > 3
-          ? "후반으로 갈수록 수치가 상승하는 흐름"
-          : drift < -3
-            ? "후반으로 갈수록 수치가 하강하는 흐름"
-            : "초중후반이 비슷한 박자로 유지되는 흐름";
-
-      const stability =
-        swing >= 15
-          ? "구간 변동폭이 커서 장면 전환/압축 영향까지 함께 보는 해석이 안전합니다."
-          : swing >= 8
-            ? "구간별 흔들림이 중간 수준이라 핵심 프레임 재확인이 유효합니다."
-            : "구간 변동폭이 작아 결론의 방향성이 비교적 일정합니다.";
-
-      const verdictText =
-        isFake === true
-          ? "타임라인 전체 기준으로는 조작 가능성 쪽으로 기울었습니다."
-          : isFake === false
-            ? "타임라인 전체 기준으로는 원본 가능성 쪽으로 기울었습니다."
-            : "최종 방향은 추가 근거와 함께 교차 확인하는 편이 안전합니다.";
-
-      return `타임라인 분석 결과 시작 ${start.toFixed(1)}% · 중간 ${mid.toFixed(1)}% · 종료 ${end.toFixed(1)}%로 ${trend}이 관측됐습니다. 최대 변동폭은 ${swing.toFixed(1)}%이며, ${stability} ${verdictText}`;
-    }
-    return "타임라인 분석에 필요한 유효 프레임이 부족해 단일 구간 신호를 중심으로 판독했습니다. 가능하면 원본 영상으로 재검증해 주세요.";
-  }
-
+function buildCommonComment({ isFake, confidence, pixelScore, freqScore }) {
   if (isFake === true) {
-    return "겉보기는 그럴듯했지만, 미세 결의 박자가 어긋나 조작 가능성이 높게 관측됐습니다.";
+    return "분석 결과, 조작 가능성이 상대적으로 높게 관측되었습니다. 아래 세부 근거를 함께 확인해 주세요.";
   }
   if (isFake === false) {
-    return "큰 윤곽과 미세 결이 같은 리듬으로 맞물려, 현재 근거상 원본 가능성이 우세합니다.";
+    return "분석 결과, 원본 가능성이 상대적으로 높게 관측되었습니다. 아래 세부 근거를 함께 확인해 주세요.";
   }
-  if (Number.isFinite(confidence) || Number.isFinite(pixel) || Number.isFinite(freq)) {
-    return "여러 신호를 합쳐 읽은 결과가 도착했습니다. 아래 근거 항목에서 단서를 함께 확인해보세요.";
+  if ([confidence, pixelScore, freqScore].some((v) => Number.isFinite(Number(v)))) {
+    return "분석이 완료되었습니다. 아래 세부 근거를 확인해 주세요.";
   }
-  return "분석이 완료되었습니다. 결과 패널의 근거 정보를 함께 확인해보세요.";
+  return "분석이 완료되었습니다. 결과 패널의 세부 근거를 확인해 주세요.";
+}
+
+function summarizeSeries(values) {
+  const series = toFiniteArray(values);
+  if (series.length === 0) return null;
+
+  const start = series[0];
+  const mid = series[Math.floor((series.length - 1) / 2)];
+  const end = series[series.length - 1];
+  const max = Math.max(...series);
+  const min = Math.min(...series);
+  const swing = Math.max(0, max - min);
+  const drift = end - start;
+  const trend = drift > 3 ? "상승" : drift < -3 ? "하강" : "유지";
+
+  return { start, mid, end, max, min, swing, drift, trend };
+}
+
+function buildTimelineExplainData(timeline, isFake) {
+  const finalStats = summarizeSeries(timeline.map((item) => item?.final));
+  const pixelStats = summarizeSeries(timeline.map((item) => item?.pixel));
+  const freqStats = summarizeSeries(timeline.map((item) => item?.srm));
+
+  const spatialFindings = [];
+  const frequencyFindings = [];
+  const caveats = [];
+  const nextSteps = [
+    "급변한 구간(피크/저점) 주변 프레임을 원본 파일 기준으로 다시 확인하세요.",
+    "가능하면 같은 장면의 다른 영상 또는 고해상도 소스로 교차 검증하세요.",
+  ];
+
+  if (finalStats) {
+    spatialFindings.push({
+      claim: "최종 신뢰도 추이를 시간축으로 확인했습니다.",
+      evidence: `시작 ${finalStats.start.toFixed(1)}% · 중간 ${finalStats.mid.toFixed(
+        1
+      )}% · 종료 ${finalStats.end.toFixed(1)}% (추세 ${finalStats.trend}, 변동폭 ${finalStats.swing.toFixed(
+        1
+      )}%)`,
+    });
+  }
+
+  if (pixelStats) {
+    spatialFindings.push({
+      claim: "픽셀 계열 신호의 구간별 변화도 함께 반영했습니다.",
+      evidence: `시작 ${pixelStats.start.toFixed(1)}% · 종료 ${pixelStats.end.toFixed(
+        1
+      )}% (변동폭 ${pixelStats.swing.toFixed(1)}%)`,
+    });
+  }
+
+  if (freqStats) {
+    frequencyFindings.push({
+      claim: "주파수(SRM) 신호의 시간대별 변화를 확인했습니다.",
+      evidence: `시작 ${freqStats.start.toFixed(1)}% · 중간 ${freqStats.mid.toFixed(
+        1
+      )}% · 종료 ${freqStats.end.toFixed(1)}% (추세 ${freqStats.trend})`,
+    });
+  }
+
+  if (finalStats && freqStats) {
+    const driftAligned =
+      (finalStats.drift >= 0 && freqStats.drift >= 0) || (finalStats.drift <= 0 && freqStats.drift <= 0);
+    const endGap = Math.abs(finalStats.end - freqStats.end);
+    frequencyFindings.push({
+      claim: "최종 점수와 주파수 신호의 방향성 일치 여부를 점검했습니다.",
+      evidence: `${driftAligned ? "동일 방향" : "상반 방향"}, 종료 시점 차이 ${endGap.toFixed(1)}%`,
+    });
+  }
+
+  if (finalStats) {
+    if (finalStats.swing >= 20) {
+      caveats.push("최종 신뢰도 변동폭이 큰 편이라 장면 전환/압축 영향 가능성을 함께 고려하세요.");
+    } else if (finalStats.swing >= 10) {
+      caveats.push("중간 수준의 변동이 있어 급변 구간 프레임을 추가 확인하는 편이 안전합니다.");
+    } else {
+      caveats.push("전체 변동폭은 크지 않지만, 단일 프레임만으로 결론을 확정하긴 어렵습니다.");
+    }
+  }
+  caveats.push("영상 길이, 해상도, 재인코딩 여부에 따라 타임라인 해석 민감도가 달라질 수 있습니다.");
+
+  let summary = "타임라인 근거가 충분하지 않아 단일 구간 중심으로 해석했습니다.";
+  if (finalStats) {
+    const verdict =
+      isFake === true
+        ? "전체 흐름은 조작 가능성 쪽에 가깝습니다."
+        : isFake === false
+          ? "전체 흐름은 원본 가능성 쪽에 가깝습니다."
+          : "최종 방향은 추가 근거와 함께 보는 편이 안전합니다.";
+    summary = `타임라인 기준 시작 ${finalStats.start.toFixed(1)}%에서 종료 ${finalStats.end.toFixed(
+      1
+    )}%로 ${finalStats.trend} 추세가 관측됐고, 변동폭은 ${finalStats.swing.toFixed(1)}%입니다. ${verdict}`;
+  }
+
+  return {
+    summary,
+    spatialFindings: spatialFindings.slice(0, 3),
+    frequencyFindings: frequencyFindings.slice(0, 3),
+    caveats: caveats.slice(0, 3),
+    nextSteps: nextSteps.slice(0, 3),
+  };
 }
 
 function parseLegacyResult(response) {
@@ -141,6 +193,14 @@ function parseLegacyResult(response) {
     final: idx < videoFrameConfidences.length ? videoFrameConfidences[idx] : null,
   }));
 
+  const inferredIsFake =
+    typeof data.is_fake === "boolean"
+      ? data.is_fake
+      : Number.isFinite(Number(data.confidence))
+        ? Number(data.confidence) < 50
+        : null;
+  const timelineExplain = buildTimelineExplainData(timeline, inferredIsFake);
+
   const preprocessed =
     data.preprocessed && typeof data.preprocessed === "object"
       ? {
@@ -157,7 +217,7 @@ function parseLegacyResult(response) {
     confidence: Number.isFinite(data.confidence) ? data.confidence : null,
     pixelScore: Number.isFinite(data.pixel_score) ? data.pixel_score : null,
     freqScore: Number.isFinite(data.freq_score) ? data.freq_score : null,
-    isFake: typeof data.is_fake === "boolean" ? data.is_fake : null,
+    isFake: inferredIsFake,
     pValue: Number.isFinite(data.p_value) ? data.p_value : null,
     reliability: data.reliability || "",
     videoMeta: data.video_meta || null,
@@ -169,9 +229,19 @@ function parseLegacyResult(response) {
     videoFrameFreqScores,
     timeline,
     preprocessed,
-    comment: buildLegacyComment(data, timeline),
-    nextSteps: [],
-    caveats: [],
+    comment:
+      String(data.ai_comment || "").trim() ||
+      buildCommonComment({
+        isFake: inferredIsFake,
+        confidence: data.confidence,
+        pixelScore: data.pixel_score,
+        freqScore: data.freq_score,
+      }),
+    explanationSummary: timelineExplain.summary,
+    spatialFindings: timelineExplain.spatialFindings,
+    frequencyFindings: timelineExplain.frequencyFindings,
+    nextSteps: timelineExplain.nextSteps,
+    caveats: timelineExplain.caveats,
   };
 }
 
@@ -179,6 +249,7 @@ function parseEvidenceResult(response) {
   const score = response?.score || {};
   const faces = Array.isArray(response?.faces) ? response.faces : [];
   const firstFace = faces[0] || {};
+  const topLevelComment = String(response?.ai_comment || "").trim();
 
   const explanation = firstFace?.explanation || {};
   const spatialEvidence = firstFace?.evidence?.spatial || {};
@@ -201,10 +272,14 @@ function parseEvidenceResult(response) {
     reliability: "",
     preprocessed,
     comment:
-      explanation?.summary ||
-      (isFake
-        ? "[경고] 비정상 징후가 감지되었습니다. 추가 검증을 권장합니다."
-        : "[판독 완료] 비정상 징후가 낮게 관찰되었습니다."),
+      topLevelComment ||
+      String(explanation?.summary || "").trim() ||
+      buildCommonComment({
+        isFake,
+        confidence,
+        pixelScore: toRealConfidence(score.p_rgb),
+        freqScore: toRealConfidence(score.p_freq),
+      }),
     topRegions: Array.isArray(spatialEvidence?.regions_topk) ? spatialEvidence.regions_topk : [],
     dominantBand: freqEvidence?.dominant_band || "",
     dominantEnergyBand: freqEvidence?.dominant_energy_band || "",

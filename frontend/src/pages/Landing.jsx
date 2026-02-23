@@ -67,8 +67,10 @@ export default function Landing() {
   };
 
   const onFeatureLeave = () => {
+    const nextIdx = (featureCycleRef.current + 1) % featureCards.length;
+    featureCycleRef.current = nextIdx;
     setHoveredFeatureIdx(null);
-    setActiveFeatureIdx(featureCycleRef.current);
+    setActiveFeatureIdx(nextIdx);
   };
 
   // 💡 전문적인 텍스트와 Lucide 아이콘으로 교체된 배열

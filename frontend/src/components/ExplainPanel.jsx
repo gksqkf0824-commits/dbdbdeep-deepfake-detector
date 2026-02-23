@@ -28,6 +28,20 @@ const toEnergyPercent = (value) => {
   return n <= 1 ? n * 100 : n;
 };
 
+const summarizeSeries = (values) => {
+  const series = Array.isArray(values) ? values.map(Number).filter(Number.isFinite) : [];
+  if (series.length === 0) return null;
+  const start = series[0];
+  const mid = series[Math.floor((series.length - 1) / 2)];
+  const end = series[series.length - 1];
+  const max = Math.max(...series);
+  const min = Math.min(...series);
+  const swing = Math.max(0, max - min);
+  const drift = end - start;
+  const trend = drift > 3 ? "상승" : drift < -3 ? "하강" : "유지";
+  return { start, mid, end, swing, trend };
+};
+
 const compactFinding = (item) => {
   const claim = String(item?.claim || "").trim();
   const evidence = String(item?.evidence || "").trim();
@@ -35,8 +49,8 @@ const compactFinding = (item) => {
   return claim || evidence;
 };
 
-const Section = ({ title, items, emptyText }) => (
-  <div className="pt-5 border-t border-slate-200">
+const ListBox = ({ title, items, emptyText }) => (
+  <div className="rounded-md border border-slate-200 bg-white p-4">
     <div className="text-sm font-semibold text-slate-900">{title}</div>
     {items.length > 0 ? (
       <div className="mt-3 space-y-2">
@@ -71,8 +85,16 @@ export default function ExplainPanel({ result }) {
   const dominantBand = result?.dominantBand ? toBandLabel(result.dominantBand) : "";
   const dominantEnergyBand = result?.dominantEnergyBand ? toBandLabel(result.dominantEnergyBand) : "";
 
+  const timelineFinalStats = summarizeSeries(
+    (Array.isArray(result?.timeline) ? result.timeline : []).map((item) => item?.final)
+  );
+
   const hasCoreEvidence =
-    topRegions.length > 0 || dominantBand || dominantEnergyBand || bandEnergy.length > 0;
+    topRegions.length > 0 ||
+    dominantBand ||
+    dominantEnergyBand ||
+    bandEnergy.length > 0 ||
+    Boolean(timelineFinalStats);
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6">
@@ -82,7 +104,7 @@ export default function ExplainPanel({ result }) {
         <div className="text-sm font-semibold text-slate-900">핵심 근거 요약</div>
         {!hasCoreEvidence ? (
           <div className="mt-3 text-sm text-slate-400">
-            분석이 완료되면 주요 근거 부위와 주파수 단서를 요약해 표시합니다.
+            분석이 완료되면 주요 근거 부위와 타임라인 단서를 요약해 표시합니다.
           </div>
         ) : (
           <div className="mt-3 space-y-3">
@@ -142,25 +164,56 @@ export default function ExplainPanel({ result }) {
                 </div>
               </div>
             )}
+
+            {timelineFinalStats && (
+              <div>
+                <div className="text-xs font-semibold text-slate-500 mb-2">타임라인 요약</div>
+                <div className="flex flex-wrap gap-2">
+                  <span className="px-2.5 py-1 rounded-full text-xs bg-white border border-slate-200 text-slate-700">
+                    시작 {timelineFinalStats.start.toFixed(1)}%
+                  </span>
+                  <span className="px-2.5 py-1 rounded-full text-xs bg-white border border-slate-200 text-slate-700">
+                    중간 {timelineFinalStats.mid.toFixed(1)}%
+                  </span>
+                  <span className="px-2.5 py-1 rounded-full text-xs bg-white border border-slate-200 text-slate-700">
+                    종료 {timelineFinalStats.end.toFixed(1)}%
+                  </span>
+                  <span className="px-2.5 py-1 rounded-full text-xs bg-white border border-slate-200 text-slate-700">
+                    변동폭 {timelineFinalStats.swing.toFixed(1)}%
+                  </span>
+                  <span className="px-2.5 py-1 rounded-full text-xs bg-white border border-slate-200 text-slate-700">
+                    추세 {timelineFinalStats.trend}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      <Section
-        title="공간 분석"
-        items={spatialFindings}
-        emptyText="공간 분석 근거가 아직 없습니다."
-      />
+      <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="text-sm font-semibold text-slate-900 mb-3">분석 근거</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <ListBox
+            title="공간 분석"
+            items={spatialFindings}
+            emptyText="공간 분석 근거가 아직 없습니다."
+          />
+          <ListBox
+            title="주파수 분석"
+            items={frequencyFindings}
+            emptyText="주파수 분석 근거가 아직 없습니다."
+          />
+        </div>
+      </div>
 
-      <Section
-        title="주파수 분석"
-        items={frequencyFindings}
-        emptyText="주파수 분석 근거가 아직 없습니다."
-      />
-
-      <Section title="주의사항" items={caveats} emptyText="추가 주의사항이 없습니다." />
-
-      <Section title="권장사항" items={nextSteps} emptyText="추가 권장사항이 없습니다." />
+      <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="text-sm font-semibold text-slate-900 mb-3">해석 가이드</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <ListBox title="주의사항" items={caveats} emptyText="추가 주의사항이 없습니다." />
+          <ListBox title="권장사항" items={nextSteps} emptyText="추가 권장사항이 없습니다." />
+        </div>
+      </div>
     </div>
   );
 }

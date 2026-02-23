@@ -4,9 +4,11 @@ import secrets
 import os
 import tempfile
 import uuid
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
+import requests
 
 from model import detector
 from redis_client import redis_db
@@ -67,6 +69,8 @@ VIDEO_TRIM_RATIO = 0.10
 # Redis TTL
 RESULT_TTL_SEC = 3600
 CACHE_TTL_SEC = 24 * 3600
+REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+REMOTE_IMAGE_TIMEOUT_SEC = 10
 
 
 def store_result_and_make_response(analysis_result: dict, stored_result: dict = None) -> dict:
@@ -115,43 +119,16 @@ def _safe_score_agg(values):
     return float(max(values)) if values else 0.0
 
 
-@app.get("/test")
-async def test():
-    return {"message": "서버가 정상적으로 작동 중입니다."}
-
-
-@app.post("/clear-cache")
-async def clear_cache():
-    """
-    Redis 캐시 키 삭제.
-    현재는 결과/비디오 캐시를 모두 정리한다.
-    """
-    try:
-        patterns = ["cache:*", "res:*"]
-        deleted_count = delete_keys_by_patterns(patterns)
-        return {
-            "message": "Redis cache cleared",
-            "deleted_keys": deleted_count,
-            "patterns": patterns,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cache clear error: {e}")
-
-
-@app.post("/api/analyze")
-@app.post("/api/analyze-evidence")
-@app.post("/analyze-evidence")
-async def analyze_with_evidence(
-    file: UploadFile = File(...),
-    explain: bool = Form(True),
-    evidence_level: str = Form("mvp"),
-    fusion_w: float = Form(0.5),
-):
+def _analyze_evidence_bytes(
+    image_bytes: bytes,
+    explain: bool = True,
+    evidence_level: str = "mvp",
+    fusion_w: float = 0.5,
+) -> dict:
     request_id = str(uuid.uuid4())
     lv = _validate_evidence_level(evidence_level)
 
-    data = await file.read()
-    img_arr = np.frombuffer(data, np.uint8)
+    img_arr = np.frombuffer(image_bytes, np.uint8)
     bgr = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
     if bgr is None:
         raise HTTPException(status_code=400, detail="이미지 디코딩 실패")
@@ -230,6 +207,86 @@ async def analyze_with_evidence(
         },
         "faces": faces_out,
     }
+
+
+@app.get("/test")
+async def test():
+    return {"message": "서버가 정상적으로 작동 중입니다."}
+
+
+@app.post("/clear-cache")
+async def clear_cache():
+    """
+    Redis 캐시 키 삭제.
+    현재는 결과/비디오 캐시를 모두 정리한다.
+    """
+    try:
+        patterns = ["cache:*", "res:*"]
+        deleted_count = delete_keys_by_patterns(patterns)
+        return {
+            "message": "Redis cache cleared",
+            "deleted_keys": deleted_count,
+            "patterns": patterns,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cache clear error: {e}")
+
+
+@app.post("/api/analyze")
+@app.post("/api/analyze-evidence")
+@app.post("/analyze-evidence")
+async def analyze_with_evidence(
+    file: UploadFile = File(...),
+    explain: bool = Form(True),
+    evidence_level: str = Form("mvp"),
+    fusion_w: float = Form(0.5),
+):
+    data = await file.read()
+    return _analyze_evidence_bytes(
+        image_bytes=data,
+        explain=explain,
+        evidence_level=evidence_level,
+        fusion_w=fusion_w,
+    )
+
+
+@app.post("/api/analyze-url")
+@app.post("/analyze-url")
+async def analyze_url_with_evidence(
+    image_url: str = Form(...),
+    explain: bool = Form(True),
+    evidence_level: str = Form("mvp"),
+    fusion_w: float = Form(0.5),
+):
+    parsed = urlparse((image_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="유효한 http/https 이미지 URL을 입력하세요.")
+
+    try:
+        resp = requests.get(parsed.geturl(), timeout=REMOTE_IMAGE_TIMEOUT_SEC)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=400, detail=f"이미지 URL 다운로드 실패: {exc}") from exc
+
+    data = resp.content or b""
+    if not data:
+        raise HTTPException(status_code=400, detail="다운로드한 이미지 데이터가 비어 있습니다.")
+    if len(data) > REMOTE_IMAGE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"이미지 크기가 너무 큽니다. ({REMOTE_IMAGE_MAX_BYTES // (1024 * 1024)}MB 이하)",
+        )
+
+    content_type = (resp.headers.get("content-type") or "").lower()
+    if content_type and "image" not in content_type:
+        raise HTTPException(status_code=400, detail="이미지 URL만 지원합니다.")
+
+    return _analyze_evidence_bytes(
+        image_bytes=data,
+        explain=explain,
+        evidence_level=evidence_level,
+        fusion_w=fusion_w,
+    )
 
 
 # =========================

@@ -95,7 +95,7 @@ export default function Landing() {
             <div className="text-sm text-slate-500 font-medium">대기 없는 즉시 판별</div>
           </div>
           <div className="hover:-translate-y-1 transition-transform">
-            <div className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-2">Deep-Scan</div>
+            <div className="text-3xl md:text-4xl font-extrabold text-slate-800 mb-2 whitespace-nowrap">Deep-Scan</div>
             <div className="text-sm text-slate-500 font-medium">주파수 및 픽셀 다각도 분석</div>
           </div>
           <div className="hover:-translate-y-1 transition-transform">

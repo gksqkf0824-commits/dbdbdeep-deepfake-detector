@@ -33,8 +33,8 @@ const EMPTY_RESULT = {
   frequencyFindings: [],
   bandAblation: [],
   bandEnergy: [],
-  camOverlayUrl: null,
-  spectrumUrl: null,
+  nextSteps: [],
+  caveats: [],
 };
 
 const clampProb = (v) => Math.max(0, Math.min(1, Number(v)));
@@ -57,6 +57,24 @@ function toRenderableImageUrl(url) {
   if (/^https?:\/\//i.test(url)) return url;
   if (url.startsWith("/")) return `${API_BASE}${url}`;
   return null;
+}
+
+function buildLegacyComment(data) {
+  const confidence = Number(data?.confidence);
+  const pixel = Number(data?.pixel_score);
+  const freq = Number(data?.freq_score);
+  const isFake = typeof data?.is_fake === "boolean" ? data.is_fake : null;
+
+  if (isFake === true) {
+    return "겉보기는 그럴듯했지만, 미세 결의 박자가 어긋나 조작 가능성이 높게 관측됐습니다.";
+  }
+  if (isFake === false) {
+    return "큰 윤곽과 미세 결이 같은 리듬으로 맞물려, 현재 근거상 원본 가능성이 우세합니다.";
+  }
+  if (Number.isFinite(confidence) || Number.isFinite(pixel) || Number.isFinite(freq)) {
+    return "여러 신호를 합쳐 읽은 결과가 도착했습니다. 아래 근거 항목에서 단서를 함께 확인해보세요.";
+  }
+  return "분석이 완료되었습니다. 결과 패널의 근거 정보를 함께 확인해보세요.";
 }
 
 function parseLegacyResult(response) {
@@ -107,12 +125,9 @@ function parseLegacyResult(response) {
     videoFrameFreqScores,
     timeline,
     preprocessed,
-    comment:
-      data.is_fake === true
-        ? "[경고] 조작 가능성이 높습니다. 추가 검증을 권장합니다."
-        : "[판독 완료] 무결성 지표가 정상 범위입니다.",
-    camOverlayUrl: toRenderableImageUrl(data.cam_overlay_url || ""),
-    spectrumUrl: toRenderableImageUrl(data.spectrum_url || ""),
+    comment: buildLegacyComment(data),
+    nextSteps: [],
+    caveats: [],
   };
 }
 
@@ -156,8 +171,8 @@ function parseEvidenceResult(response) {
       : [],
     bandAblation: Array.isArray(freqEvidence?.band_ablation) ? freqEvidence.band_ablation : [],
     bandEnergy: Array.isArray(freqEvidence?.band_energy) ? freqEvidence.band_energy : [],
-    camOverlayUrl: toRenderableImageUrl(firstFace?.assets?.cam_overlay_url || ""),
-    spectrumUrl: toRenderableImageUrl(firstFace?.assets?.spectrum_url || ""),
+    nextSteps: Array.isArray(explanation?.next_steps) ? explanation.next_steps : [],
+    caveats: Array.isArray(explanation?.caveats) ? explanation.caveats : [],
   };
 }
 
@@ -350,13 +365,11 @@ export default function Analyze() {
     }
   };
 
-  const imageUrls = useMemo(
-    () => ({
-      pixel: result?.camOverlayUrl || null,
-      freq: result?.spectrumUrl || null,
-    }),
-    [result]
-  );
+  const aiComment = useMemo(() => {
+    if (!result) return "";
+    const summary = String(result.comment || result.explanationSummary || "").trim();
+    return summary;
+  }, [result]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-indigo-50 py-10 px-4">
@@ -370,6 +383,8 @@ export default function Analyze() {
             previewUrl={previewUrl}
             imageUrl={imageUrl}
             loading={loading}
+            hasResult={Boolean(result)}
+            aiComment={aiComment}
             onModeChange={onChangeMode}
             onPickFile={onPickFile}
             onUrlChange={setImageUrl}
@@ -377,10 +392,8 @@ export default function Analyze() {
           />
 
           <ResultPanel
-            loading={loading}
             progress={progress}
             result={result}
-            imageUrls={imageUrls}
             error={error}
             faceImageUrl={result?.preprocessed?.cropImage || null}
           />

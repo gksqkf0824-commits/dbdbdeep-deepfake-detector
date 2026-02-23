@@ -943,7 +943,6 @@ def build_evidence_for_face(
     p_final = fuse_probs(p_rgb, p_freq, w=fusion_w)
 
     heat = cam(x_rgb, class_idx=1)
-    overlay = overlay_cam(face_rgb_uint8, heat, alpha=0.45)
 
     h, w, _ = face_rgb_uint8.shape
     masks = build_region_masks_from_5pt(landmarks, h, w)
@@ -983,7 +982,6 @@ def build_evidence_for_face(
     band_deltas: Dict[str, float] = {}
     dominant_band = "unknown"
     gray = to_gray(face_rgb_uint8)
-    spectrum_rgb = wavelet_signature_rgb(gray, (face_rgb_uint8.shape[1], face_rgb_uint8.shape[0]))
     energy_ratio_map = wavelet_band_energy_ratio(gray)
     dominant_energy_band = (
         max(energy_ratio_map.keys(), key=lambda k: energy_ratio_map[k]) if energy_ratio_map else "unknown"
@@ -991,7 +989,7 @@ def build_evidence_for_face(
 
     freq_notes = ["wavelet_haar_l2_ablation"]
     if evidence_level != "off" and p_final >= 0.60:
-        band_deltas, dominant_band, spectrum_rgb = band_ablation_wavelet(
+        band_deltas, dominant_band, _ = band_ablation_wavelet(
             infer_fn=lambda t: infer_prob_binary(freq_model, t),
             preprocess_fn=freq_preprocess_tensor,
             img_rgb_uint8=face_rgb_uint8,
@@ -1013,8 +1011,6 @@ def build_evidence_for_face(
 
     assets = {
         "face_crop_url": to_png_data_url(face_rgb_uint8),
-        "cam_overlay_url": to_png_data_url(overlay),
-        "spectrum_url": to_png_data_url(spectrum_rgb),
     }
 
     evidence = {
@@ -1045,6 +1041,24 @@ def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> 
     spatial = evidence.get("spatial", {})
     freq = evidence.get("frequency", {})
 
+    region_label = {
+        "eyes": "눈 주변",
+        "nose": "코 주변",
+        "mouth": "입 주변",
+        "forehead": "이마",
+        "jawline": "턱선",
+        "cheeks": "볼",
+    }
+    band_label = {"low": "저주파", "mid": "중주파", "high": "고주파", "unknown": "미확정"}
+
+    def _region(r: str) -> str:
+        rr = str(r or "미확정")
+        return region_label.get(rr, rr)
+
+    def _band(b: str) -> str:
+        bb = str(b or "unknown")
+        return band_label.get(bb, bb)
+
     top = spatial.get("regions_topk", [])[:2]
     dom = str(freq.get("dominant_band", "unknown"))
     band_map = {x["band"]: x["delta_fake_prob"] for x in freq.get("band_ablation", []) if "band" in x}
@@ -1053,16 +1067,31 @@ def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> 
 
     fake_prob = float(score.get("p_final", 0.0))
     fake_prob = max(0.0, min(1.0, fake_prob))
+    real_prob = 1.0 - fake_prob
     is_fake_mode = fake_prob >= 0.5
 
-    verdict = "조작 가능성이 높습니다." if is_fake_mode else "진본 가능성이 높습니다."
-    summary = f"공간/주파수 근거를 종합했을 때 {verdict}"
+    top_regions_kor = [_region(item.get("region", "")) for item in top if item.get("region")]
+    region_hint = "얼굴 핵심 부위"
+    if top_regions_kor:
+        region_hint = ", ".join(top_regions_kor)
+
+    band_hint = _band(dom if dom != "unknown" else energy_dom)
+    if is_fake_mode:
+        summary = (
+            f"겉보기는 자연스러워도 {region_hint}의 결이 살짝 박자를 놓치고 "
+            f"{band_hint} 대역 신호가 흔들려, 이번 샘플은 조작 가능성이 높게 관측됩니다."
+        )
+    else:
+        summary = (
+            f"{region_hint}과 {band_hint} 대역 흐름이 같은 리듬으로 맞물려, "
+            "이번 샘플은 원본 가능성이 우세합니다."
+        )
 
     spatial_findings = []
     for item in top:
-        region = str(item.get("region", "face"))
+        region = _region(item.get("region", "face"))
         importance = float(item.get("importance_cam", 0.0))
-        claim = f"{region} 부위가 판별 근거로 크게 반영되었습니다."
+        claim = f"{region} 부위가 판별의 핵심 단서로 반영되었습니다."
         evidence_txt = f"CAM {importance:.2f}"
         delta = item.get("delta_occlusion")
         if delta is not None:
@@ -1071,11 +1100,25 @@ def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> 
             evidence_txt += f", occlusion 시 fake 확률 {abs(delta_f):.1f}% {direction}"
         spatial_findings.append({"claim": claim, "evidence": evidence_txt})
 
+    outside_face_ratio = spatial.get("outside_face_ratio", None)
+    localization_conf = str(spatial.get("localization_confidence", "unknown"))
+    if outside_face_ratio is not None:
+        try:
+            outside_pct = float(outside_face_ratio) * 100.0
+            if outside_pct <= 25.0:
+                claim = "근거가 얼굴 중심에 비교적 잘 모여 있습니다."
+            else:
+                claim = "근거가 얼굴 외곽에도 일부 분산되어 해석 시 주의가 필요합니다."
+            evidence_txt = f"outside-face ratio {outside_pct:.1f}%, localization {localization_conf}"
+            spatial_findings.append({"claim": claim, "evidence": evidence_txt})
+        except Exception:
+            pass
+
     if not spatial_findings:
         spatial_findings.append(
             {
                 "claim": "얼굴 전반 패턴을 기반으로 판별했습니다.",
-                "evidence": "부위별 상위 근거가 제한되어 전체 정보를 활용했습니다.",
+                "evidence": "부위별 상위 근거가 제한되어 전체 정보를 함께 활용했습니다.",
             }
         )
 
@@ -1085,8 +1128,8 @@ def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> 
         direction = "증가" if delta_f > 0 else ("감소" if delta_f < 0 else "변화 거의 없음")
         frequency_findings.append(
             {
-                "claim": f"{dom} 대역이 예측에 민감하게 작용했습니다.",
-                "evidence": f"{dom} 제거 시 fake 확률 {abs(delta_f):.1f}% {direction}",
+                "claim": f"{_band(dom)} 대역이 예측 민감도에 크게 작용했습니다.",
+                "evidence": f"{_band(dom)} 제거 시 fake 확률 {abs(delta_f):.1f}% {direction}",
             }
         )
     else:
@@ -1102,30 +1145,45 @@ def explain_from_evidence(evidence: Dict[str, Any], score: Dict[str, float]) -> 
     high = float(energy_map.get("high", 0.0)) * 100.0
     frequency_findings.append(
         {
-            "claim": f"에너지 우세 대역은 {energy_dom} 입니다.",
+            "claim": f"에너지 우세 대역은 {_band(energy_dom)}입니다.",
             "evidence": f"low {low:.1f}%, mid {mid:.1f}%, high {high:.1f}%",
         }
     )
 
     if dom != "unknown" and energy_dom != "unknown":
-        consistency = "일관" if dom == energy_dom else "불일치 가능성"
+        consistency = "일관" if dom == energy_dom else "부분 불일치"
         frequency_findings.append(
             {
-                "claim": "우세 대역 일치 여부",
-                "evidence": f"dominant_band={dom}, dominant_energy_band={energy_dom}, 판정={consistency}",
+                "claim": "주파수 민감도와 에너지 우세 대역의 합치도를 확인했습니다.",
+                "evidence": f"dominant {_band(dom)} / energy-dominant {_band(energy_dom)} ({consistency})",
             }
         )
+
+    frequency_findings.append(
+        {
+            "claim": "최종 확률 축에서도 같은 방향의 결론이 확인됩니다.",
+            "evidence": f"fake {fake_prob*100.0:.1f}%, real {real_prob*100.0:.1f}%",
+        }
+    )
+
+    freq_notes = freq.get("notes", [])
+    spatial_notes = spatial.get("notes", [])
+    caveats = [
+        "강한 압축이나 저해상도는 주파수 패턴을 왜곡해 오탐/미탐을 늘릴 수 있습니다.",
+        "자동 판별은 보조 근거입니다. 중요한 의사결정은 추가 검증과 함께 진행하세요.",
+    ]
+    if any("skipped" in str(note) for note in (freq_notes or [])) or any(
+        "skipped" in str(note) for note in (spatial_notes or [])
+    ):
+        caveats.insert(0, "일부 근거 실험이 생략되어, 이번 결과는 보수적으로 해석하는 편이 안전합니다.")
 
     return {
         "summary": summary,
         "spatial_findings": spatial_findings[:4],
         "frequency_findings": frequency_findings[:4],
         "next_steps": [
-            "다른 각도와 조명 조건의 이미지로 교차 검증하세요.",
-            "가능하면 짧은 동영상도 함께 분석해 일관성을 확인하세요.",
+            "원본에 가까운 고해상도 파일(재인코딩 전)로 한 번 더 교차 검증하세요.",
+            "가능하면 다른 각도/조명 샘플을 추가해 같은 결론이 반복되는지 확인하세요.",
         ],
-        "caveats": [
-            "강한 압축이나 저해상도는 오탐을 유발할 수 있습니다.",
-            "자동 분석 결과는 보조 지표이며 최종 판정이 아닙니다.",
-        ],
+        "caveats": caveats[:3],
     }

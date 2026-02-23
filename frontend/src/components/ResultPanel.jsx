@@ -77,13 +77,7 @@ const VideoTimelineChart = ({ data }) => {
 };
 
 // 💡 props에 faceImageUrl 추가
-export default function ResultPanel({ loading, progress, result, imageUrls, error, faceImageUrl }) {
-  const trust = (() => {
-    const representative = toFiniteNumber(result?.videoRepresentativeConfidence);
-    if (representative !== null) return representative;
-    return toFiniteNumber(result?.confidence);
-  })();
-
+export default function ResultPanel({ progress, result, error, faceImageUrl }) {
   const pixelScore = toFiniteNumber(result?.pixelScore ?? result?.pixel_score);
   const freqScore = toFiniteNumber(result?.freqScore ?? result?.freq_score);
 
@@ -99,6 +93,25 @@ export default function ResultPanel({ loading, progress, result, imageUrls, erro
 
   const latestTimeline = timeline.length > 0 ? timeline[timeline.length - 1] : null;
   const isMultiData = timeline.length > 1;
+  const timelineFinal = toFiniteNumber(latestTimeline?.final);
+
+  const trust = (() => {
+    const representative = toFiniteNumber(result?.videoRepresentativeConfidence);
+    const rawConfidence = toFiniteNumber(result?.confidence);
+
+    const explicit = [representative, rawConfidence, timelineFinal].filter((v) => v !== null);
+    const positiveExplicit = explicit.find((v) => v > 0);
+    if (positiveExplicit !== undefined) return positiveExplicit;
+
+    const scoreCandidates = [pixelScore, freqScore].filter((v) => v !== null);
+    if (scoreCandidates.length > 0) {
+      const avg = scoreCandidates.reduce((acc, cur) => acc + cur, 0) / scoreCandidates.length;
+      return Math.max(0, Math.min(100, avg));
+    }
+
+    if (explicit.length > 0) return explicit[0];
+    return null;
+  })();
 
   const isFake = (() => {
     if (typeof result?.isFake === "boolean") return result.isFake;
@@ -140,7 +153,7 @@ export default function ResultPanel({ loading, progress, result, imageUrls, erro
               AI 판별 결과
             </div>
             <div className="text-4xl sm:text-5xl font-bold text-blue-600 tracking-tight">
-              {trust !== null ? trust.toFixed(2) : "00.00"}%
+              {trust !== null ? trust.toFixed(2) : "--"}%
             </div>
             <div className="text-sm text-slate-500 mt-2 font-medium">
               {result ? (result.reliability ? `신뢰도: ${result.reliability}` : '분석 완료') : "분석 결과가 여기에 표시됩니다."}
@@ -212,13 +225,6 @@ export default function ResultPanel({ loading, progress, result, imageUrls, erro
                   </div>
                 )}
               </div>
-              <div className="w-full h-[120px] grid place-items-center bg-slate-50 rounded-md border border-slate-100 overflow-hidden">
-                {imageUrls?.freq ? (
-                  <img src={imageUrls.freq} alt="freq" className="max-h-full object-contain" />
-                ) : (
-                  <span className="text-xs text-slate-400">{loading ? "(생성 중...)" : "(이미지 없음)"}</span>
-                )}
-              </div>
             </div>
 
             {/* Pixel (픽셀) */}
@@ -233,13 +239,6 @@ export default function ResultPanel({ loading, progress, result, imageUrls, erro
                   <div className="text-xs text-slate-500 text-center mt-10">
                     --
                   </div>
-                )}
-              </div>
-              <div className="w-full h-[120px] grid place-items-center bg-slate-50 rounded-md border border-slate-100 overflow-hidden">
-                {imageUrls?.pixel ? (
-                  <img src={imageUrls.pixel} alt="pixel" className="max-h-full object-contain" />
-                ) : (
-                  <span className="text-xs text-slate-400">{loading ? "(생성 중...)" : "(이미지 없음)"}</span>
                 )}
               </div>
             </div>

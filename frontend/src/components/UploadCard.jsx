@@ -5,6 +5,8 @@ export default function UploadCard({
   fileType = "",
   previewUrl,
   loading,
+  hasResult = false,
+  aiComment = "",
   imageUrl,
   onModeChange,
   onPickFile,
@@ -22,6 +24,24 @@ export default function UploadCard({
     if (!f) return;
     onPickFile(f);
   };
+
+  const defaultComment =
+    mode === "file"
+      ? previewUrl
+        ? fileType === "video"
+          ? "영상이 준비됐어요. 판독을 시작해보세요."
+          : "파일이 준비됐어요. 판독을 시작해보세요."
+        : "분석 전입니다. 파일을 업로드하세요."
+      : imageUrl
+        ? "URL이 입력되었습니다. 판독을 시작해보세요."
+        : "분석 전입니다. 이미지 주소를 입력해주세요.";
+
+  const commentText = (() => {
+    const cleaned = String(aiComment || "").trim();
+    if (cleaned.length > 0) return cleaned;
+    if (hasResult) return "분석이 완료되었습니다. 결과 패널의 상세 근거를 함께 확인해보세요.";
+    return defaultComment;
+  })();
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 h-full flex flex-col">
@@ -142,17 +162,8 @@ export default function UploadCard({
         <div className="font-semibold text-slate-800 mb-2">
           AI 코멘트
         </div>
-        <div className="text-sm text-slate-500">
-          {mode === "file" 
-            ? (
-                previewUrl
-                  ? fileType === "video"
-                    ? "영상이 준비됐어요. 판독을 시작해보세요."
-                    : "파일이 준비됐어요. 판독을 시작해보세요."
-                  : "분석 전입니다. 파일을 업로드하세요."
-              )
-            : (imageUrl ? "URL이 입력되었습니다. 판독을 시작해보세요." : "분석 전입니다. 이미지 주소를 입력해주세요.")
-          }
+        <div className="text-sm text-slate-500 leading-relaxed whitespace-pre-line">
+          {commentText}
         </div>
       </div>
       

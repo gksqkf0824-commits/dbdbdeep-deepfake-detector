@@ -16,6 +16,14 @@ const BAND_LABEL = {
 
 const toRegionLabel = (region) => REGION_LABEL[region] || region || "미확정";
 const toBandLabel = (band) => BAND_LABEL[band] || band || "미확정";
+const toFiniteNumber = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+const formatPercent = (value, digits = 1) => {
+  const n = toFiniteNumber(value);
+  return n === null ? "-" : `${n.toFixed(digits)}%`;
+};
 
 export default function ExplainPanel({ result }) {
   const isFake = (() => {
@@ -39,10 +47,30 @@ export default function ExplainPanel({ result }) {
   })();
 
   const topRegions = Array.isArray(result?.topRegions) ? result.topRegions.slice(0, 2) : [];
-  const spatialFindings = Array.isArray(result?.spatialFindings) ? result.spatialFindings.slice(0, 2) : [];
+  const spatialFindings = Array.isArray(result?.spatialFindings) ? result.spatialFindings.slice(0, 3) : [];
   const frequencyFindings = Array.isArray(result?.frequencyFindings)
-    ? result.frequencyFindings.slice(0, 2)
+    ? result.frequencyFindings.slice(0, 4)
     : [];
+  const bandEnergy = Array.isArray(result?.bandEnergy) ? result.bandEnergy : [];
+  const caveats = Array.isArray(result?.caveats) ? result.caveats.slice(0, 2) : [];
+  const nextSteps = Array.isArray(result?.nextSteps) ? result.nextSteps.slice(0, 2) : [];
+
+  const confidence = toFiniteNumber(result?.videoRepresentativeConfidence ?? result?.confidence);
+  const pixelScore = toFiniteNumber(result?.pixelScore ?? result?.pixel_score);
+  const freqScore = toFiniteNumber(result?.freqScore ?? result?.freq_score);
+  const pValue = toFiniteNumber(result?.pValue ?? result?.p_value);
+
+  const energyText =
+    bandEnergy.length > 0
+      ? bandEnergy
+          .map((item) => `${toBandLabel(item?.band)} ${formatPercent((Number(item?.energy_ratio) || 0) * 100)}`)
+          .join(" / ")
+      : "";
+
+  const scoreSupportText = (() => {
+    if (confidence === null && pixelScore === null && freqScore === null) return "";
+    return `최종 ${formatPercent(confidence, 2)} · 픽셀 ${formatPercent(pixelScore, 2)} · 주파수 ${formatPercent(freqScore, 2)}`;
+  })();
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6">
@@ -53,6 +81,13 @@ export default function ExplainPanel({ result }) {
       <div className="text-sm text-slate-500 leading-relaxed">
         {summary}
       </div>
+
+      {scoreSupportText && (
+        <div className="mt-4 text-sm text-slate-600 leading-relaxed">
+          신뢰도 근거: {scoreSupportText}
+          {pValue !== null && ` · p-value ${pValue.toFixed(4)}`}
+        </div>
+      )}
 
       {topRegions.length > 0 && (
         <div className="mt-4 text-sm text-slate-600">
@@ -76,6 +111,12 @@ export default function ExplainPanel({ result }) {
         </div>
       )}
 
+      {energyText && (
+        <div className="mt-2 text-sm text-slate-600">
+          밴드 에너지 분포: {energyText}
+        </div>
+      )}
+
       {(spatialFindings.length > 0 || frequencyFindings.length > 0) && (
         <div className="mt-4 space-y-2">
           {spatialFindings.map((item, idx) => (
@@ -86,6 +127,26 @@ export default function ExplainPanel({ result }) {
           {frequencyFindings.map((item, idx) => (
             <div key={`freq-${idx}`} className="text-xs text-slate-500 leading-relaxed">
               [주파수] {item?.claim} ({item?.evidence})
+            </div>
+          ))}
+        </div>
+      )}
+
+      {caveats.length > 0 && (
+        <div className="mt-4 space-y-1">
+          {caveats.map((item, idx) => (
+            <div key={`caveat-${idx}`} className="text-xs text-slate-500 leading-relaxed">
+              [주의] {item}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {nextSteps.length > 0 && (
+        <div className="mt-3 space-y-1">
+          {nextSteps.map((item, idx) => (
+            <div key={`next-${idx}`} className="text-xs text-slate-500 leading-relaxed">
+              [권장] {item}
             </div>
           ))}
         </div>

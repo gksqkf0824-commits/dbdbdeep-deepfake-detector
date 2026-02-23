@@ -12,6 +12,7 @@ const EMPTY_RESULT = {
   pValue: null,
   reliability: '',
   videoMeta: null,
+  preprocessed: null,
   comment: '',
 };
 
@@ -76,6 +77,13 @@ async function analyzeWithFastAPI(file, fileType) {
   }
 
   return json;
+}
+
+function toDataUrl(base64Payload, mimeType = 'image/jpeg') {
+  if (typeof base64Payload !== 'string' || base64Payload.length === 0) {
+    return null;
+  }
+  return `data:${mimeType};base64,${base64Payload}`;
 }
 
 function App() {
@@ -170,6 +178,23 @@ function App() {
     try {
       const response = await analyzeWithFastAPI(rawFile, fileType);
       const data = response?.data || {};
+      const preprocessed =
+        data.preprocessed && typeof data.preprocessed === 'object'
+          ? {
+              detectionImage: toDataUrl(
+                data.preprocessed.face_detection_image_b64,
+                data.preprocessed.mime_type || 'image/jpeg'
+              ),
+              cropImage: toDataUrl(
+                data.preprocessed.face_crop_image_b64,
+                data.preprocessed.mime_type || 'image/jpeg'
+              ),
+              faceBbox:
+                data.preprocessed.face_bbox && typeof data.preprocessed.face_bbox === 'object'
+                  ? data.preprocessed.face_bbox
+                  : null,
+            }
+          : null;
 
       setAnalysisResult({
         confidence: Number.isFinite(data.confidence) ? data.confidence : null,
@@ -179,6 +204,7 @@ function App() {
         pValue: Number.isFinite(data.p_value) ? data.p_value : null,
         reliability: data.reliability || '',
         videoMeta: data.video_meta || null,
+        preprocessed,
         comment:
           data.is_fake === true
             ? '[경고] 조작 가능성이 높습니다. 추가 검증을 권장합니다.'
@@ -270,6 +296,52 @@ function App() {
               <p>추론 사용 프레임: {analysisResult.videoMeta.used_frames}</p>
               <p>추론 실패 프레임: {analysisResult.videoMeta.failed_frames}</p>
               <p>집계 방식: {analysisResult.videoMeta.agg_mode}</p>
+            </div>
+          )}
+
+          {fileType === 'image' && analysisResult.preprocessed && (
+            <div className="p-4 bg-black/80 border-l-4 border-[#00f2ff] text-sm space-y-3">
+              <h3 className="text-[#00f2ff] text-lg font-bold underline">얼굴 전처리 결과</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="bg-[#121b28] border border-[#00f2ff]/30 p-2">
+                  <p className="text-xs mb-2">얼굴 탐지(ROI)</p>
+                  {analysisResult.preprocessed.detectionImage ? (
+                    <img
+                      src={analysisResult.preprocessed.detectionImage}
+                      alt="얼굴 탐지 결과"
+                      className="w-full aspect-video object-contain bg-black"
+                    />
+                  ) : (
+                    <div className="w-full aspect-video flex items-center justify-center text-gray-600 bg-black">
+                      NO IMAGE
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-[#121b28] border border-[#00f2ff]/30 p-2">
+                  <p className="text-xs mb-2">얼굴 크롭(224x224)</p>
+                  {analysisResult.preprocessed.cropImage ? (
+                    <img
+                      src={analysisResult.preprocessed.cropImage}
+                      alt="얼굴 크롭 전처리 결과"
+                      className="w-full aspect-square object-contain bg-black"
+                    />
+                  ) : (
+                    <div className="w-full aspect-square flex items-center justify-center text-gray-600 bg-black">
+                      NO IMAGE
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {analysisResult.preprocessed.faceBbox && (
+                <p className="text-[11px] text-[#00f2ff]/80 font-mono">
+                  bbox: x1={analysisResult.preprocessed.faceBbox.x1}, y1=
+                  {analysisResult.preprocessed.faceBbox.y1}, x2=
+                  {analysisResult.preprocessed.faceBbox.x2}, y2=
+                  {analysisResult.preprocessed.faceBbox.y2}
+                </p>
+              )}
             </div>
           )}
         </section>

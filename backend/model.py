@@ -1,13 +1,13 @@
 import os
-import io
-import uuid
+import base64
+from typing import Any, Dict, Optional, Tuple
+
 import cv2
 import numpy as np
 from PIL import Image
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torchvision import models, transforms
 
 # RetinaFace (InsightFace)
@@ -229,7 +229,11 @@ class DeepfakeDetectorEnsemble:
             raise ValueError("Decode failed (cv2.imdecode returned None)")
         return img_bgr
     
-    def _extract_face_crop224_bgr(self, img_bgr: np.ndarray, margin: float = 0.15) -> np.ndarray:
+    def _extract_face_crop224_bgr(
+        self,
+        img_bgr: np.ndarray,
+        margin: float = 0.15,
+    ) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
         """
         RetinaFace bbox -> square+margin -> crop -> padding resize(224)
         """
@@ -245,23 +249,80 @@ class DeepfakeDetectorEnsemble:
             img_height=img_bgr.shape[0]
         )
 
-        crop = img_bgr[sq[1]:sq[3], sq[0]:sq[2]]
+        x1, y1, x2, y2 = [int(v) for v in sq]
+        crop = img_bgr[y1:y2, x1:x2]
         if crop.size == 0:
             raise ValueError("Invalid crop region")
 
         crop_224 = resize_with_padding(crop, target_size=224)
-        return crop_224
+        return crop_224, (x1, y1, x2, y2)
 
-    def predict(self, image_bytes: bytes):
+    def _encode_bgr_to_base64_jpeg(
+        self,
+        img_bgr: np.ndarray,
+        quality: int = 85,
+        max_side: Optional[int] = 768,
+    ) -> str:
+        encoded_img = img_bgr
+        h, w = encoded_img.shape[:2]
+
+        if max_side is not None and max(h, w) > max_side:
+            scale = max_side / float(max(h, w))
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            encoded_img = cv2.resize(encoded_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        ok, buf = cv2.imencode(
+            ".jpg",
+            encoded_img,
+            [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)],
+        )
+        if not ok:
+            raise ValueError("JPEG encoding failed")
+
+        return base64.b64encode(buf.tobytes()).decode("ascii")
+
+    def _build_preprocessed_payload(
+        self,
+        original_bgr: np.ndarray,
+        face_bbox: Tuple[int, int, int, int],
+        face_crop_224_bgr: np.ndarray,
+    ) -> Dict[str, Any]:
+        x1, y1, x2, y2 = face_bbox
+        detected_bgr = original_bgr.copy()
+
+        cv2.rectangle(detected_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        return {
+            "mime_type": "image/jpeg",
+            "face_bbox": {
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+            },
+            "face_detection_image_b64": self._encode_bgr_to_base64_jpeg(
+                detected_bgr, quality=85, max_side=768
+            ),
+            "face_crop_image_b64": self._encode_bgr_to_base64_jpeg(
+                face_crop_224_bgr, quality=90, max_side=None
+            ),
+            "crop_size": {
+                "width": int(face_crop_224_bgr.shape[1]),
+                "height": int(face_crop_224_bgr.shape[0]),
+            },
+        }
+
+    def predict(self, image_bytes: bytes, include_preprocess: bool = False):
         """
         return:
-          avg_conf(real-confidence), pixel_real_conf, freq_real_conf
+          avg_conf(real-confidence), pixel_real_conf, freq_real_conf, preprocessed_payload
         """
         # 1) bytes -> BGR
         img_bgr = self._decode_image_bytes_to_bgr(image_bytes)
 
         # 2) face crop (224,224) in BGR
-        face_224_bgr = self._extract_face_crop224_bgr(img_bgr, margin=0.15)
+        face_224_bgr, face_bbox = self._extract_face_crop224_bgr(img_bgr, margin=0.15)
 
         # -------------------
         # 3) Pixel 입력 (RGB 3ch + ImageNet norm)
@@ -305,7 +366,13 @@ class DeepfakeDetectorEnsemble:
         # 6) 앙상블 (Pixel 0.7 : Freq 0.3)
         avg_conf = (s_p * 0.5) + (s_f * 0.5)
 
-        return round(avg_conf, 2), round(s_p, 2), round(s_f, 2)
+        preprocessed_payload = None
+        if include_preprocess:
+            preprocessed_payload = self._build_preprocessed_payload(
+                img_bgr, face_bbox, face_224_bgr
+            )
+
+        return round(avg_conf, 2), round(s_p, 2), round(s_f, 2), preprocessed_payload
 
 
 # =========================================================

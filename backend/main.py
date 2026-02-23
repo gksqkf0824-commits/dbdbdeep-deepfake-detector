@@ -58,12 +58,13 @@ RESULT_TTL_SEC = 3600
 CACHE_TTL_SEC = 24 * 3600
 
 
-def store_result_and_make_response(analysis_result: dict) -> dict:
+def store_result_and_make_response(analysis_result: dict, stored_result: dict = None) -> dict:
     """
     결과를 Redis(res:{token})에 저장하고 프론트가 쓰는 형태로 반환.
     """
     token = secrets.token_urlsafe(16)
-    redis_set_json(redis_db, f"res:{token}", analysis_result, ex=RESULT_TTL_SEC)
+    payload_for_store = stored_result if stored_result is not None else analysis_result
+    redis_set_json(redis_db, f"res:{token}", payload_for_store, ex=RESULT_TTL_SEC)
     return {
         "result_url": f"http://127.0.0.1:8000/get-result/{token}",
         "data": analysis_result,
@@ -83,7 +84,10 @@ async def analyze_image(file: UploadFile = File(...)):
     image_bytes = await file.read()
 
     try:
-        score, pixel_score, freq_score = detector.predict(image_bytes)
+        score, pixel_score, freq_score, preprocessed = detector.predict(
+            image_bytes,
+            include_preprocess=True,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model Inference Error: {e}")
 
@@ -91,7 +95,12 @@ async def analyze_image(file: UploadFile = File(...)):
         score, pixel_score, freq_score,
         real_mean=REAL_MEAN, real_std=REAL_STD
     )
-    return store_result_and_make_response(analysis_result)
+    if preprocessed is not None:
+        analysis_result["preprocessed"] = preprocessed
+
+    stored_result = dict(analysis_result)
+    stored_result.pop("preprocessed", None)
+    return store_result_and_make_response(analysis_result, stored_result=stored_result)
 
 
 # =========================
@@ -134,7 +143,10 @@ async def analyze_video(file: UploadFile = File(...)):
         for fr in frames:
             try:
                 jpg_bytes = frame_to_jpeg_bytes(fr, quality=90)
-                score, p_score, f_score = detector.predict(jpg_bytes)
+                score, p_score, f_score, _ = detector.predict(
+                    jpg_bytes,
+                    include_preprocess=False,
+                )
                 scores.append(score)
                 pixel_scores.append(p_score)
                 freq_scores.append(f_score)

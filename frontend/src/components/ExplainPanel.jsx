@@ -49,6 +49,22 @@ const compactFinding = (item) => {
   return claim || evidence;
 };
 
+const INTERPRETATION_GUIDE_ITEMS = [
+  "주요 부위: 모델이 얼굴에서 특히 주목한 위치(CAM 기반)입니다.",
+  "우세 주파수 대역: 밴드를 제거했을 때 예측 변화가 가장 큰 구간입니다.",
+  "밴드 제거 민감도(Δfake): 각 대역 제거 전후의 fake 확률 변화량입니다.",
+  "밴드 에너지 비율: Wavelet 에너지가 각 대역에 분포한 상대 비율입니다.",
+  "저주파(0 ~ 0.125 cycles/pixel): 얼굴의 큰 윤곽, 완만한 밝기/색 변화 같은 저해상 구조 성분입니다.",
+  "중주파(0.125 ~ 0.25 cycles/pixel): 눈/코/입 주변 경계, 피부 결 등 중간 규모 텍스처 성분입니다.",
+  "고주파(0.25 ~ 0.5 cycles/pixel): 미세 경계, 세부 노이즈, 과도한 샤프닝/압축 잔상에 민감한 성분입니다.",
+];
+
+const INTERPRETATION_GUIDE_REFERENCES = [
+  "기준: Nyquist 한계는 0.5 cycles/pixel이며, 각주파수로는 2πf(rad/pixel) 관계를 사용합니다.",
+  "주의: 현재 Wavelet 분석의 주파수 단위는 시간 주파수(Hz)가 아니라 공간 주파수(cycles/pixel)입니다.",
+  "실세계 단위(cycles/mm)로 환산하려면 이미지의 mm/pixel 스케일 정보가 추가로 필요합니다.",
+];
+
 const ListBox = ({ title, items, emptyText, visualTitle = "", visualUrl = null }) => (
   <div className="rounded-md border border-slate-200 bg-white p-4">
     <div className="text-sm font-semibold text-slate-900">{title}</div>
@@ -87,9 +103,6 @@ export default function ExplainPanel({ result }) {
     : [];
   const nextSteps = Array.isArray(result?.nextSteps)
     ? result.nextSteps.map((v) => String(v || "").trim()).filter(Boolean).slice(0, 3)
-    : [];
-  const interpretationGuide = Array.isArray(result?.interpretationGuide)
-    ? result.interpretationGuide.map((v) => String(v || "").trim()).filter(Boolean).slice(0, 6)
     : [];
   const bandEnergy = Array.isArray(result?.bandEnergy) ? result.bandEnergy : [];
 
@@ -203,7 +216,35 @@ export default function ExplainPanel({ result }) {
       </div>
 
       <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-        <div className="text-sm font-semibold text-slate-900 mb-3">분석 근거</div>
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-sm font-semibold text-slate-900">분석 근거</div>
+          <div className="relative group">
+            <button
+              type="button"
+              className="text-xs font-medium text-slate-400 hover:text-slate-500 transition-colors"
+            >
+              해석 가이드
+            </button>
+            <div className="absolute right-0 top-6 z-20 w-[460px] max-w-[90vw] rounded-lg border border-slate-200 bg-white p-4 shadow-xl opacity-0 invisible transition-all duration-150 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible">
+              <div className="text-sm font-semibold text-slate-900 mb-3">해석 가이드</div>
+              <div className="space-y-2">
+                {INTERPRETATION_GUIDE_ITEMS.map((line, idx) => (
+                  <div key={`guide-item-${idx}`} className="text-xs text-slate-600 leading-relaxed">
+                    {line}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 text-sm font-semibold text-slate-900 mb-2">참고사항</div>
+              <div className="space-y-2">
+                {INTERPRETATION_GUIDE_REFERENCES.map((line, idx) => (
+                  <div key={`guide-ref-${idx}`} className="text-xs text-slate-600 leading-relaxed">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
         <div className="flex flex-col gap-3">
           <ListBox
             title="공간 분석"
@@ -216,8 +257,6 @@ export default function ExplainPanel({ result }) {
             title="주파수 분석"
             items={frequencyFindings}
             emptyText="주파수 분석 근거가 아직 없습니다."
-            visualTitle="Wavelet 분석 결과"
-            visualUrl={result?.frequencyVisualUrl || null}
           />
         </div>
       </div>
@@ -227,23 +266,6 @@ export default function ExplainPanel({ result }) {
         <div className="flex flex-col gap-3">
           <ListBox title="⚠️ 주의" items={caveats} emptyText="추가 주의사항이 없습니다." />
           <ListBox title="✅ 권장" items={nextSteps} emptyText="추가 권장사항이 없습니다." />
-        </div>
-      </div>
-
-      <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-        <div className="text-sm font-semibold text-slate-900 mb-3">📌 해석 가이드</div>
-        <div className="rounded-md border border-slate-200 bg-white p-4">
-          {interpretationGuide.length > 0 ? (
-            <div className="space-y-2">
-              {interpretationGuide.map((line, idx) => (
-                <div key={`guide-${idx}`} className="text-sm text-slate-600 leading-relaxed">
-                  {line}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-sm text-slate-400">해석 가이드가 아직 없습니다.</div>
-          )}
         </div>
       </div>
     </div>

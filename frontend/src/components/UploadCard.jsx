@@ -4,6 +4,7 @@ export default function UploadCard({
   mode = "file",
   fileType = "",
   previewUrl,
+  urlPreview = null,
   loading,
   hasResult = false,
   aiComment = "",
@@ -36,7 +37,7 @@ export default function UploadCard({
         : "분석 전입니다. 파일을 업로드하세요."
       : imageUrl
         ? "URL이 입력되었습니다. 판독을 시작해보세요."
-        : "분석 전입니다. 이미지 주소를 입력해주세요.";
+        : "분석 전입니다. 이미지/영상 주소를 입력해주세요.";
 
   const commentText = (() => {
     const cleaned = String(aiComment || "").trim();
@@ -62,6 +63,11 @@ export default function UploadCard({
     }
     onAnalyze?.();
   };
+
+  const urlPreviewKind = String(urlPreview?.kind || "").toLowerCase() === "video" ? "video" : "image";
+  const urlPreviewImage =
+    urlPreview?.dataUrl || urlPreview?.thumbnailDataUrl || urlPreview?.thumbnailUrl || null;
+  const urlPreviewVideo = urlPreview?.url || null;
 
   return (
     /**
@@ -145,14 +151,46 @@ export default function UploadCard({
             />
           </div>
         ) : (
-          <div className="flex-1 border-2 border-gray-100 bg-slate-50 rounded-lg flex flex-col items-center justify-center p-8 transition-all duration-300">
-            <div className="text-4xl mb-4">🔗</div>
-            <div className="font-bold text-slate-700 text-lg mb-8 text-center">
-              이미지 URL을 입력하세요
-            </div>
+          <div className="flex-1 border-2 border-gray-100 bg-slate-50 rounded-lg flex flex-col p-6 transition-all duration-300">
+            {urlPreview ? (
+              <div className="mb-5">
+                <div className="w-full aspect-video rounded-lg overflow-hidden bg-black/90 border border-slate-200">
+                  {urlPreviewKind === "video" && urlPreviewVideo && !urlPreviewImage ? (
+                    <video
+                      src={urlPreviewVideo}
+                      controls
+                      className="w-full h-full object-contain"
+                    />
+                  ) : urlPreviewImage ? (
+                    <img
+                      src={urlPreviewImage}
+                      alt="URL preview"
+                      className="w-full h-full object-contain bg-white"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-slate-300 text-sm font-medium">
+                      URL 미리보기를 표시할 수 없습니다.
+                    </div>
+                  )}
+                </div>
+                <div className="mt-2 text-xs text-slate-500 font-medium">
+                  {urlPreviewKind === "video" ? "URL 영상 미리보기" : "URL 이미지 미리보기"}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center text-center py-6">
+                <div className="text-4xl mb-4">🔗</div>
+                <div className="font-bold text-slate-700 text-lg mb-2">
+                  이미지/영상 URL을 입력하세요
+                </div>
+                <div className="text-sm text-slate-500 font-medium">
+                  인스타 릴스, 유튜브 쇼츠 URL도 지원합니다.
+                </div>
+              </div>
+            )}
             <input 
               type="text" 
-              placeholder="https://example.com/image.jpg"
+              placeholder="https://example.com/image.jpg 또는 https://youtube.com/shorts/..."
               value={imageUrl || ""}
               onChange={(e) => onUrlChange?.(e.target.value)}
               className="w-full px-5 py-4 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all text-sm font-medium bg-white"

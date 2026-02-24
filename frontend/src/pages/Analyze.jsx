@@ -36,7 +36,7 @@ const EMPTY_RESULT = {
   bandAblation: [],
   bandEnergy: [],
   spatialVisualUrl: null,
-  frequencyVisualUrl: null,
+  sourcePreview: null,
   interpretationGuide: [],
   nextSteps: [],
   caveats: [],
@@ -72,17 +72,38 @@ function toRenderableImageUrl(url) {
   return null;
 }
 
+function normalizeSourcePreview(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const kind = String(raw.kind || "").toLowerCase() === "video" ? "video" : "image";
+  const directUrl = toRenderableImageUrl(raw.url || "");
+  const dataUrl = toRenderableImageUrl(raw.data_url || "");
+  const thumbnailDataUrl = toRenderableImageUrl(raw.thumbnail_data_url || "");
+  const thumbnailUrl = toRenderableImageUrl(raw.thumbnail_url || "");
+  const pageUrl = String(raw.page_url || "").trim() || null;
+  const title = String(raw.title || "").trim() || null;
+
+  return {
+    kind,
+    url: directUrl,
+    dataUrl,
+    thumbnailDataUrl,
+    thumbnailUrl,
+    pageUrl,
+    title,
+  };
+}
+
 function buildCommonComment({ isFake, confidence, pixelScore, freqScore }) {
   if (isFake === true) {
-    return "분석 결과, 조작 가능성이 상대적으로 높게 관측되었습니다. 아래 세부 근거를 함께 확인해 주세요.";
+    return "자동 분석 기준으로 조작 가능성이 조금 더 높게 나왔습니다. 아래 근거를 함께 확인해 주세요.";
   }
   if (isFake === false) {
-    return "분석 결과, 원본 가능성이 상대적으로 높게 관측되었습니다. 아래 세부 근거를 함께 확인해 주세요.";
+    return "자동 분석 기준으로 원본일 가능성이 조금 더 높게 나왔습니다. 아래 근거를 함께 확인해 주세요.";
   }
   if ([confidence, pixelScore, freqScore].some((v) => Number.isFinite(Number(v)))) {
-    return "분석이 완료되었습니다. 아래 세부 근거를 확인해 주세요.";
+    return "분석이 완료되었습니다. 아래 근거를 확인해 주세요.";
   }
-  return "분석이 완료되었습니다. 결과 패널의 세부 근거를 확인해 주세요.";
+  return "분석이 완료되었습니다. 결과 패널의 근거를 확인해 주세요.";
 }
 
 function summarizeSeries(values) {
@@ -116,7 +137,7 @@ function buildTimelineExplainData(timeline, isFake) {
 
   if (finalStats) {
     spatialFindings.push({
-      claim: "최종 신뢰도 추이를 시간축으로 확인했습니다.",
+      claim: "영상 초반·중반·후반의 최종 점수 변화를 비교했습니다.",
       evidence: `시작 ${finalStats.start.toFixed(1)}% · 중간 ${finalStats.mid.toFixed(
         1
       )}% · 종료 ${finalStats.end.toFixed(1)}% (추세 ${finalStats.trend}, 변동폭 ${finalStats.swing.toFixed(
@@ -127,7 +148,7 @@ function buildTimelineExplainData(timeline, isFake) {
 
   if (pixelStats) {
     spatialFindings.push({
-      claim: "픽셀 계열 신호의 구간별 변화도 함께 반영했습니다.",
+      claim: "화면 질감(픽셀) 점수의 구간별 변화도 함께 확인했습니다.",
       evidence: `시작 ${pixelStats.start.toFixed(1)}% · 종료 ${pixelStats.end.toFixed(
         1
       )}% (변동폭 ${pixelStats.swing.toFixed(1)}%)`,
@@ -136,7 +157,7 @@ function buildTimelineExplainData(timeline, isFake) {
 
   if (freqStats) {
     frequencyFindings.push({
-      claim: "주파수(SRM) 신호의 시간대별 변화를 확인했습니다.",
+      claim: "주파수 패턴 점수의 시간대별 변화를 확인했습니다.",
       evidence: `시작 ${freqStats.start.toFixed(1)}% · 중간 ${freqStats.mid.toFixed(
         1
       )}% · 종료 ${freqStats.end.toFixed(1)}% (추세 ${freqStats.trend})`,
@@ -148,7 +169,7 @@ function buildTimelineExplainData(timeline, isFake) {
       (finalStats.drift >= 0 && freqStats.drift >= 0) || (finalStats.drift <= 0 && freqStats.drift <= 0);
     const endGap = Math.abs(finalStats.end - freqStats.end);
     frequencyFindings.push({
-      claim: "최종 점수와 주파수 신호의 방향성 일치 여부를 점검했습니다.",
+      claim: "최종 점수와 주파수 점수가 같은 방향으로 움직였는지 점검했습니다.",
       evidence: `${driftAligned ? "동일 방향" : "상반 방향"}, 종료 시점 차이 ${endGap.toFixed(1)}%`,
     });
   }
@@ -235,7 +256,6 @@ function parseLegacyResult(response) {
     : [];
 
   const spatialVisualUrl = toRenderableImageUrl(representativeAssets?.gradcam_overlay_url || "");
-  const frequencyVisualUrl = toRenderableImageUrl(representativeAssets?.wavelet_signature_url || "");
 
   const representativeSpatialEvidence = representativeEvidence?.spatial || {};
   const representativeFreqEvidence = representativeEvidence?.frequency || {};
@@ -249,6 +269,7 @@ function parseLegacyResult(response) {
           ),
         }
       : null;
+  const sourcePreview = normalizeSourcePreview(data?.source_preview || response?.source_preview || null);
 
   return {
     ...EMPTY_RESULT,
@@ -299,7 +320,7 @@ function parseLegacyResult(response) {
         ? representativeFrequencyFindings
         : timelineExplain.frequencyFindings,
     spatialVisualUrl,
-    frequencyVisualUrl,
+    sourcePreview,
     interpretationGuide:
       representativeInterpretationGuide.length > 0
         ? representativeInterpretationGuide
@@ -320,7 +341,6 @@ function parseEvidenceResult(response) {
   const spatialEvidence = firstFace?.evidence?.spatial || {};
   const freqEvidence = firstFace?.evidence?.frequency || {};
   const spatialVisualUrl = toRenderableImageUrl(firstFace?.assets?.gradcam_overlay_url || "");
-  const frequencyVisualUrl = toRenderableImageUrl(firstFace?.assets?.wavelet_signature_url || "");
 
   const hasDetectedFace = faces.length > 0;
   const confidence = hasDetectedFace ? toRealConfidence(score.p_final) : null;
@@ -328,6 +348,7 @@ function parseEvidenceResult(response) {
 
   const cropImage = toRenderableImageUrl(firstFace?.assets?.face_crop_url || "");
   const preprocessed = cropImage ? { cropImage } : null;
+  const sourcePreview = normalizeSourcePreview(response?.source_preview || null);
 
   return {
     ...EMPTY_RESULT,
@@ -362,7 +383,7 @@ function parseEvidenceResult(response) {
     bandAblation: Array.isArray(freqEvidence?.band_ablation) ? freqEvidence.band_ablation : [],
     bandEnergy: Array.isArray(freqEvidence?.band_energy) ? freqEvidence.band_energy : [],
     spatialVisualUrl,
-    frequencyVisualUrl,
+    sourcePreview,
     interpretationGuide: Array.isArray(explanation?.interpretation_guide)
       ? explanation.interpretation_guide
       : INTERPRETATION_GUIDE_FALLBACK,
@@ -409,7 +430,7 @@ async function analyzeWithFastAPI(file, fileType) {
   return json;
 }
 
-async function analyzeImageUrlWithFastAPI(imageUrl) {
+async function analyzeMediaUrlWithFastAPI(imageUrl) {
   const trimmed = (imageUrl || "").trim();
   if (!/^https?:\/\//i.test(trimmed)) {
     throw new Error("URL은 http:// 또는 https:// 형식이어야 합니다.");
@@ -439,7 +460,9 @@ async function analyzeImageUrlWithFastAPI(imageUrl) {
     throw new Error(json?.detail || `분석 요청 실패 (status: ${response.status})`);
   }
 
-  return json;
+  const mediaHint = String(json?.input_media_type || json?.data?.input_media_type || "").toLowerCase();
+  const mediaType = mediaHint === "video" || Boolean(json?.video_meta || json?.data?.video_meta) ? "video" : "image";
+  return { json, mediaType };
 }
 
 export default function Analyze() {
@@ -448,6 +471,7 @@ export default function Analyze() {
   const [fileType, setFileType] = useState("");
   const [previewUrl, setPreviewUrl] = useState(null);
   const [imageUrl, setImageUrl] = useState("");
+  const [urlPreview, setUrlPreview] = useState(null);
   const [videoDuration, setVideoDuration] = useState(0);
 
   const [loading, setLoading] = useState(false);
@@ -463,7 +487,7 @@ export default function Analyze() {
         clearInterval(progressTimerRef.current);
       }
       if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
+        if (String(previewUrl).startsWith("blob:")) URL.revokeObjectURL(previewUrl);
       }
     };
   }, [previewUrl]);
@@ -502,6 +526,7 @@ export default function Analyze() {
     setFileType(nextType);
     setPreviewUrl(objectUrl);
     setImageUrl("");
+    setUrlPreview(null);
     setResult(null);
     setError("");
     stopProgress(0);
@@ -519,18 +544,20 @@ export default function Analyze() {
 
   const onChangeMode = (mode) => {
     setInputMode(mode);
+    setUrlPreview(null);
     setResult(null);
     setError("");
     stopProgress(0);
   };
 
   const resetAnalysis = () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    if (previewUrl && String(previewUrl).startsWith("blob:")) URL.revokeObjectURL(previewUrl);
     setInputMode("file");
     setFile(null);
     setFileType("");
     setPreviewUrl(null);
     setImageUrl("");
+    setUrlPreview(null);
     setVideoDuration(0);
     setResult(null);
     setError("");
@@ -550,19 +577,36 @@ export default function Analyze() {
         requestFile = file;
         requestType = fileType === "video" ? "video" : "image";
       } else {
-        if (!imageUrl.trim()) throw new Error("분석할 이미지 URL을 입력해 주세요.");
-        requestType = "image";
+        if (!imageUrl.trim()) throw new Error("분석할 이미지/영상 URL을 입력해 주세요.");
       }
 
       setLoading(true);
-      const estimatedSeconds = requestType === "video" ? Math.max(videoDuration * 2, 8) : 5;
+      const estimatedSeconds =
+        inputMode === "file"
+          ? requestType === "video"
+            ? Math.max(videoDuration * 2, 8)
+            : 5
+          : 10;
       startProgress(estimatedSeconds);
 
-      const response =
-        inputMode === "file"
-          ? await analyzeWithFastAPI(requestFile, requestType)
-          : await analyzeImageUrlWithFastAPI(imageUrl);
+      let response;
+      if (inputMode === "file") {
+        response = await analyzeWithFastAPI(requestFile, requestType);
+      } else {
+        const urlPayload = await analyzeMediaUrlWithFastAPI(imageUrl);
+        requestType = urlPayload.mediaType;
+        response = urlPayload.json;
+      }
       const parsed = parseAnalyzeResponse(response, requestType);
+      if (inputMode === "url") {
+        const fallbackPreview =
+          requestType === "video"
+            ? { kind: "video", url: imageUrl.trim(), pageUrl: imageUrl.trim() }
+            : { kind: "image", url: imageUrl.trim(), pageUrl: imageUrl.trim() };
+        setUrlPreview(parsed?.sourcePreview || fallbackPreview);
+      } else {
+        setUrlPreview(null);
+      }
       setResult(parsed);
       stopProgress(100);
     } catch (e) {
@@ -598,6 +642,7 @@ export default function Analyze() {
               mode={inputMode}
               fileType={fileType}
               previewUrl={previewUrl}
+              urlPreview={urlPreview}
               imageUrl={imageUrl}
               loading={loading}
               hasResult={Boolean(result)}
@@ -606,7 +651,10 @@ export default function Analyze() {
               onReset={resetAnalysis}
               onModeChange={onChangeMode}
               onPickFile={onPickFile}
-              onUrlChange={setImageUrl}
+              onUrlChange={(value) => {
+                setImageUrl(value);
+                if (urlPreview) setUrlPreview(null);
+              }}
               onAnalyze={analyze}
             />
           </div>

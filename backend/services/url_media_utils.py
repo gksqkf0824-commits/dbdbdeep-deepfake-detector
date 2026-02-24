@@ -11,10 +11,14 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "bmp", "gif"}
 _VIDEO_EXTS = {"mp4", "mov", "avi", "mkv", "webm", "m4v", "3gp", "ts"}
+_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
 
 
 def _env_int(name: str, default: int, minimum: int) -> int:
@@ -53,6 +57,78 @@ def _validate_source_url(source_url: str) -> str:
     if not parsed.netloc:
         raise ValueError("source_url 형식이 올바르지 않습니다.")
     return s
+
+
+def _path_ext_from_url(source_url: str) -> str:
+    parsed = urlparse(source_url)
+    path = unquote(parsed.path or "")
+    _, ext = os.path.splitext(path)
+    return ext.lower().lstrip(".")
+
+
+def _looks_like_direct_media_url(source_url: str) -> bool:
+    ext = _path_ext_from_url(source_url)
+    return ext in _IMAGE_EXTS or ext in _VIDEO_EXTS
+
+
+def _media_type_from_content_type(content_type: str) -> str:
+    low = str(content_type or "").lower()
+    if low.startswith("image/"):
+        return "image"
+    if low.startswith("video/"):
+        return "video"
+    return "video"
+
+
+def _download_direct_media(source_url: str, max_bytes: int) -> DownloadedMedia:
+    try:
+        import requests
+    except Exception as exc:
+        raise RuntimeError("직접 URL 다운로드를 위해 requests 라이브러리가 필요합니다.") from exc
+
+    timeout = max(URL_MEDIA_TIMEOUT_SEC, 10)
+    headers = {"User-Agent": _HTTP_USER_AGENT}
+    content_type = ""
+    with requests.get(source_url, stream=True, timeout=timeout, headers=headers) as resp:
+        resp.raise_for_status()
+        content_type = str(resp.headers.get("Content-Type", "") or "")
+
+        declared_length = int(resp.headers.get("Content-Length", "0") or 0)
+        if declared_length > max_bytes:
+            raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
+
+        chunks = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
+            chunks.append(chunk)
+        content = b"".join(chunks)
+
+    if not content:
+        raise ValueError("다운로드된 미디어 파일이 비어 있습니다.")
+
+    ext = _path_ext_from_url(source_url)
+    media_type = (
+        "image"
+        if ext in _IMAGE_EXTS
+        else "video"
+        if ext in _VIDEO_EXTS
+        else _media_type_from_content_type(content_type)
+    )
+    filename = os.path.basename(unquote(urlparse(source_url).path or "")) or f"url_media.{ext or 'bin'}"
+
+    return DownloadedMedia(
+        source_url=source_url,
+        media_type=media_type,
+        filename=filename,
+        content=content,
+        extractor="direct_http",
+        title="",
+    )
 
 
 def _pick_primary_entry(info: Any) -> Dict[str, Any]:
@@ -152,6 +228,9 @@ def _is_login_or_rate_limit_error(message: str) -> bool:
         "rate-limit reached",
         "requested content is not available",
         "sign in to confirm",
+        "provided youtube account cookies are no longer valid",
+        "confirm you’re not a bot",
+        "confirm you're not a bot",
     ]
     return any(keyword in low for keyword in keywords)
 
@@ -167,7 +246,23 @@ def _is_format_unavailable_error(message: str) -> bool:
     return any(keyword in low for keyword in keywords)
 
 
-def _login_or_rate_limit_detail() -> str:
+def _is_ffmpeg_merge_error(message: str) -> bool:
+    low = str(message or "").lower()
+    return "ffmpeg is not installed" in low or "requested merging of multiple formats" in low
+
+
+def _login_or_rate_limit_detail(source_url: str = "") -> str:
+    host = (urlparse(source_url).netloc or "").lower()
+    if "youtube.com" in host or "youtu.be" in host:
+        return (
+            "유튜브 접근이 제한되었습니다(봇 확인/로그인 필요). "
+            "유효한 YouTube 쿠키를 재발급해 YTDLP_COOKIEFILE로 설정해 주세요."
+        )
+    if "instagram.com" in host:
+        return (
+            "인스타그램 접근이 제한되었습니다(로그인/레이트리밋). "
+            "유효한 Instagram 쿠키를 재발급해 YTDLP_COOKIEFILE로 설정해 주세요."
+        )
     return (
         "URL 접근이 제한되었습니다(로그인 또는 레이트리밋). "
         "서버에 쿠키 파일을 마운트하고 YTDLP_COOKIEFILE 환경변수를 설정해 주세요."
@@ -177,6 +272,15 @@ def _login_or_rate_limit_detail() -> str:
 def download_media_from_url(source_url: str) -> DownloadedMedia:
     validated_url = _validate_source_url(source_url)
     max_bytes = URL_MEDIA_MAX_MB * 1024 * 1024
+
+    # 이미지/영상 직링크는 yt-dlp 대신 직접 다운로드가 더 안정적이다.
+    if _looks_like_direct_media_url(validated_url):
+        try:
+            return _download_direct_media(validated_url, max_bytes=max_bytes)
+        except Exception:
+            # 직접 다운로드가 실패하면 yt-dlp 경로로 재시도한다.
+            pass
+
     YoutubeDL = _load_yt_dlp_cls()
 
     with tempfile.TemporaryDirectory(prefix="url-media-") as tmp_dir:
@@ -199,10 +303,8 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
         # YouTube/Instagram 등에서 가변 포맷 구성을 고려해 format selector를 순차 fallback한다.
         # 추론에는 오디오가 필수 아님(프레임 기반)이라 video-only를 우선 시도한다.
         format_candidates = [
-            "bv*+ba/best",
-            "bestvideo*+bestaudio/bestvideo*/best",
-            "bestvideo*/bestvideo/best",
-            "best/bestvideo*/bestvideo",
+            "bestvideo*/bestvideo",
+            "best[ext=mp4]/best[ext=webm]/best",
             None,  # yt-dlp 기본 format 선택
         ]
 
@@ -223,13 +325,15 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
                 msg = str(exc)
                 if _is_format_unavailable_error(msg):
                     continue
+                if _is_ffmpeg_merge_error(msg):
+                    continue
                 if _is_login_or_rate_limit_error(msg):
-                    raise ValueError(_login_or_rate_limit_detail()) from exc
+                    raise ValueError(_login_or_rate_limit_detail(validated_url)) from exc
                 raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {exc}") from exc
 
         if info is None:
             if _is_login_or_rate_limit_error(str(last_error or "")):
-                raise ValueError(_login_or_rate_limit_detail())
+                raise ValueError(_login_or_rate_limit_detail(validated_url))
             raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {last_error}")
 
         entry = _pick_primary_entry(info)

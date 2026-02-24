@@ -454,6 +454,8 @@ async function analyzeMediaUrlWithFastAPI(imageUrl) {
   }
 
   const formData = new FormData();
+  // 배포된 서버 버전별 파라미터 차이(source_url / image_url)를 모두 호환한다.
+  formData.append("source_url", trimmed);
   formData.append("image_url", trimmed);
   formData.append("explain", "true");
   formData.append("evidence_level", "mvp");

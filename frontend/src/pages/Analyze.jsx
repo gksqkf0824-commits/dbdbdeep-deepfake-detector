@@ -600,30 +600,39 @@ export default function Analyze() {
       <div className="max-w-6xl mx-auto space-y-8">
         <Header />
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <UploadCard
-            mode={inputMode}
-            fileType={fileType}
-            previewUrl={previewUrl}
-            imageUrl={imageUrl}
-            loading={loading}
-            hasResult={Boolean(result)}
-            aiComment={aiComment}
-            aiCommentSource={aiCommentSource}
-            onReset={resetAnalysis}
-            onModeChange={onChangeMode}
-            onPickFile={onPickFile}
-            onUrlChange={setImageUrl}
-            onAnalyze={analyze}
-          />
+        {/* [수정 부분] grid-cols-2 대신 flex 레이아웃 사용 */}
+        <div className="flex flex-col lg:flex-row items-stretch gap-6">
+          
+          {/* 1. 왼쪽 업로드 카드: 고정 너비 또는 최소 너비 설정 */}
+          <div className="w-full lg:w-[420px] flex-shrink-0">
+            <UploadCard
+              mode={inputMode}
+              fileType={fileType}
+              previewUrl={previewUrl}
+              imageUrl={imageUrl}
+              loading={loading}
+              hasResult={Boolean(result)}
+              aiComment={aiComment}
+              aiCommentSource={aiCommentSource}
+              onReset={resetAnalysis}
+              onModeChange={onChangeMode}
+              onPickFile={onPickFile}
+              onUrlChange={setImageUrl}
+              onAnalyze={analyze}
+            />
+          </div>
 
-          <ResultPanel
-            progress={progress}
-            result={result}
-            error={error}
-            fileType={fileType}
-            faceImageUrl={result?.preprocessed?.cropImage || null}
-          />
+          {/* 2. 오른쪽 결과 판넬: flex-grow(또는 flex-1)를 통해 왼쪽으로 팽창 */}
+          <div className="flex-1 min-w-0">
+            <ResultPanel
+              progress={progress}
+              result={result}
+              error={error}
+              fileType={fileType}
+              faceImageUrl={result?.preprocessed?.cropImage || null}
+            />
+          </div>
+
         </div>
 
         <ExplainPanel result={result} />

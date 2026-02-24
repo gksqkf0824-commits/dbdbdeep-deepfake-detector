@@ -1,13 +1,11 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom"; // 💡 useLocation 추가
 import { useEffect, useRef, useState } from "react";
-// 💡 아이콘 라이브러리 추가
 import { UploadCloud, Cpu, FileCheck } from "lucide-react"; 
 import Header from "../components/Header";
 import ServicePR from "../components/ServicePR";
 import FAQSection from "../components/FAQSection";
 import Footer from "../components/Footer";
 
-// 스르륵 나타나는 페이드인 애니메이션 컴포넌트
 const FadeInSection = ({ children, delay = "duration-1000" }) => {
   const [isVisible, setIsVisible] = useState(false);
   const domRef = useRef();
@@ -39,24 +37,48 @@ const FadeInSection = ({ children, delay = "duration-1000" }) => {
 
 export default function Landing() {
   const nav = useNavigate();
+  const location = useLocation(); // 💡 현재 경로 및 해시를 추적하기 위해 추가
+
+  // 💡 [추가] 외부 페이지(추론페이지 등)에서 해시를 들고 왔을 때 해당 위치로 스크롤
+  useEffect(() => {
+    if (location.hash) {
+      // #pr-section 에서 #을 제거하고 id만 추출
+      const id = location.hash.replace("#", "");
+      const element = document.getElementById(id);
+      
+      if (element) {
+        // 페이지 렌더링 후 약간의 시간차를 두어 정확한 위치를 잡습니다.
+        setTimeout(() => {
+          const headerOffset = 64;
+          const elementPosition = element.getBoundingClientRect().top;
+          const offsetPosition = elementPosition + window.scrollY - headerOffset;
+
+          window.scrollTo({
+            top: offsetPosition,
+            behavior: "smooth"
+          });
+        }, 100);
+      }
+    }
+  }, [location]); // location 정보가 바뀔 때마다 실행
+
   const featureCards = [
     { title: "Real-Time", desc: "대기 없는 즉시 판별" },
     { title: "Deep-Scan", desc: "주파수 및 픽셀 다각도 분석" },
     { title: "All-in-One", desc: "사진·영상·URL 통합 지원" },
     { title: "Zero-Log", desc: "분석 후 즉시 영구 파기" },
   ];
+  
   const [activeFeatureIdx, setActiveFeatureIdx] = useState(0);
   const [hoveredFeatureIdx, setHoveredFeatureIdx] = useState(null);
   const featureCycleRef = useRef(0);
 
   useEffect(() => {
     if (hoveredFeatureIdx !== null) return;
-
     const timer = setInterval(() => {
       featureCycleRef.current = (featureCycleRef.current + 1) % featureCards.length;
       setActiveFeatureIdx(featureCycleRef.current);
     }, 1800);
-
     return () => clearInterval(timer);
   }, [hoveredFeatureIdx, featureCards.length]);
 
@@ -73,7 +95,6 @@ export default function Landing() {
     setActiveFeatureIdx(nextIdx);
   };
 
-  // 💡 전문적인 텍스트와 Lucide 아이콘으로 교체된 배열
   const steps = [
     {
       step: "01",
@@ -99,7 +120,6 @@ export default function Landing() {
     <div className="min-h-screen bg-[#f9fafb] text-slate-900 font-sans break-keep">
       <Header />
 
-      {/* 1. HERO SECTION (기존과 동일하므로 생략하지 않고 그대로 유지) */}
       <section className="pt-40 pb-32 flex flex-col items-center justify-center relative w-full px-6 mt-10">
         <div className="mb-6 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-50 text-[#3182f6] text-sm font-semibold">
           <span className="w-2 h-2 rounded-full bg-[#3182f6] animate-pulse"></span>
@@ -154,7 +174,6 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* 2. 본문 컨텐츠 영역 */}
       <section className="bg-white py-32 rounded-t-[3rem] shadow-[0_-10px_40px_rgba(0,0,0,0.02)]">
         <div className="max-w-5xl mx-auto px-6 space-y-40">
 
@@ -164,7 +183,6 @@ export default function Landing() {
             </FadeInSection>
           </div>
 
-          {/* 💡 Step-by-Step 디자인 변경됨 */}
           <div id="how-to-section">
             <FadeInSection delay="duration-[1000ms]">
               <div className="text-center mb-16">
@@ -180,15 +198,11 @@ export default function Landing() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
-                {/* 데스크톱 환경에서 스텝 사이를 잇는 점선 배경 */}
                 <div className="hidden md:block absolute top-12 left-[15%] right-[15%] h-0.5 border-t-2 border-dashed border-gray-200 z-0"></div>
 
                 {steps.map((item, idx) => (
                   <div key={idx} className="relative z-10 flex flex-col items-center text-center bg-white p-6 rounded-2xl hover:-translate-y-2 transition-transform duration-300">
-                    
-                    {/* 숫자와 아이콘이 겹쳐진 고급스러운 배지 스타일 */}
                     <div className="w-20 h-20 rounded-2xl bg-white border border-gray-100 shadow-sm flex items-center justify-center text-3xl mb-8 font-black text-slate-200 relative">
-                      {/* Lucide 아이콘 컨테이너 */}
                       <div className="absolute -top-3 -right-3 bg-white p-2.5 rounded-xl shadow-md border border-gray-50 flex items-center justify-center">
                         {item.icon}
                       </div>
@@ -215,7 +229,6 @@ export default function Landing() {
       </section>
 
       <Footer />
-      
     </div>
   );
 }

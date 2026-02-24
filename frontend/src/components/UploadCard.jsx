@@ -64,10 +64,14 @@ export default function UploadCard({
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 h-full flex flex-col">
+    /**
+     * 핵심 수정: max-width를 [280px]에서 [400px]로 늘려 압축률을 절반으로 낮춤.
+     * 여전히 ml-0 mr-auto를 통해 왼쪽 정렬을 유지합니다.
+     */
+    <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-5 flex flex-col h-full w-full max-w-[400px] ml-0 mr-auto">
       
-      {/* Header */}
-      <div className="flex items-center justify-between mb-5">
+      {/* Header - 기존 크기와 폰트 유지 */}
+      <div className="flex items-center justify-between mb-5 flex-shrink-0">
         <div className="font-semibold text-slate-900 text-lg">
           분석 대상 업로드
         </div>
@@ -100,13 +104,11 @@ export default function UploadCard({
         </button>
       </div>
 
-      {/* 입력 영역 */}
-      <div className="h-[340px] flex flex-col flex-shrink-0">
+      {/* 입력 영역 - 공간이 넓어진 만큼 내부 패딩 복구 */}
+      <div className="flex-grow flex flex-col mb-6 min-h-[360px]">
         {mode === "file" ? (
-          // 1. 파일 업로드 모드
           <div
             onClick={openPicker}
-            // 💡 핵심 수정 포인트: relative와 overflow-hidden을 추가하여 내부 이미지가 밖으로 나가는 것을 차단합니다.
             className="relative flex-1 border-2 border-dashed border-blue-200 bg-slate-50 rounded-lg flex flex-col items-center justify-center text-center cursor-pointer transition hover:border-blue-400 overflow-hidden"
           >
             {previewUrl ? (
@@ -120,17 +122,16 @@ export default function UploadCard({
                 <img
                   src={previewUrl}
                   alt="preview"
-                  // 💡 핵심 수정 포인트: 이미지를 박스 안에 절대 좌표로 띄우고(absolute inset-0) object-contain으로 비율을 맞춥니다.
                   className="absolute inset-0 w-full h-full object-contain p-2"
                 />
               )
             ) : (
-              <div>
-                <div className="text-3xl mb-3">📁</div>
-                <div className="font-medium text-slate-700">
+              <div className="px-4">
+                <div className="text-4xl mb-4">📁</div>
+                <div className="font-bold text-slate-700 text-lg">
                   상대의 사진/영상을 올려주세요
                 </div>
-                <div className="text-sm text-slate-500 mt-2">
+                <div className="text-sm text-slate-500 mt-2 font-medium">
                   클릭해서 파일 선택
                 </div>
               </div>
@@ -144,10 +145,9 @@ export default function UploadCard({
             />
           </div>
         ) : (
-          // 2. URL 입력 모드
           <div className="flex-1 border-2 border-gray-100 bg-slate-50 rounded-lg flex flex-col items-center justify-center p-8 transition-all duration-300">
-            <div className="text-3xl mb-3">🔗</div>
-            <div className="font-semibold text-slate-700 mb-6">
+            <div className="text-4xl mb-4">🔗</div>
+            <div className="font-bold text-slate-700 text-lg mb-8 text-center">
               이미지 URL을 입력하세요
             </div>
             <input 
@@ -155,40 +155,41 @@ export default function UploadCard({
               placeholder="https://example.com/image.jpg"
               value={imageUrl || ""}
               onChange={(e) => onUrlChange?.(e.target.value)}
-              className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all text-sm font-medium bg-white"
+              className="w-full px-5 py-4 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all text-sm font-medium bg-white"
             />
-            <div className="text-xs text-slate-500 mt-4">
-              웹상에 공개된 이미지 주소만으로도 즉시 분석이 가능합니다.
-            </div>
           </div>
         )}
       </div>
 
-      {/* Analyze Button */}
-      <button
-        onClick={onClickPrimary}
-        disabled={loading}
-        className={`w-full mt-5 py-3 rounded-lg font-semibold text-white transition flex-shrink-0 ${
-          loading
-            ? "bg-blue-300 cursor-not-allowed"
-            : hasResult
-              ? "bg-slate-700 hover:bg-slate-800"
-              : "bg-gradient-to-r from-blue-600 to-indigo-500 hover:opacity-90"
-        }`}
-      >
-        {loading ? "분석 중..." : hasResult ? "초기화" : "판독 시작"}
-      </button>
+      {/* 하단 버튼 및 코멘트 */}
+      <div className="mt-auto space-y-5">
+        <button
+          onClick={onClickPrimary}
+          disabled={loading}
+          className={`w-full py-4 rounded-xl font-bold text-white shadow-lg transition-all flex-shrink-0 ${
+            loading
+              ? "bg-blue-300 cursor-not-allowed"
+              : hasResult
+                ? "bg-slate-800 hover:bg-slate-900"
+                : "bg-gradient-to-r from-blue-600 to-indigo-500 hover:opacity-90 active:scale-95"
+          }`}
+        >
+          {loading ? "데이터 분석 중..." : hasResult ? "다른 파일 분석하기" : "판독 시작"}
+        </button>
 
-      {/* Comment Box */}
-      <div className="mt-5 bg-slate-50 border border-gray-200 rounded-lg p-4 flex-shrink-0">
-        <div className="flex items-center justify-between mb-2">
-          <div className="font-semibold text-slate-800">AI 코멘트</div>
-          {hasResult && sourceLabel && (
-            <div className="text-[11px] text-slate-500 font-medium">{sourceLabel}</div>
-          )}
-        </div>
-        <div className="text-sm text-slate-500 leading-relaxed whitespace-pre-line">
-          {commentText}
+        <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-5">
+          <div className="flex items-center justify-between mb-2.5">
+            <div className="font-bold text-blue-900 text-sm flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+              AI 코멘트
+            </div>
+            {hasResult && sourceLabel && (
+              <div className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">{sourceLabel}</div>
+            )}
+          </div>
+          <div className="text-[13px] text-blue-800/80 leading-relaxed font-medium">
+            {commentText}
+          </div>
         </div>
       </div>
       

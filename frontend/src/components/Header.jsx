@@ -1,23 +1,47 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 
 export default function Header() {
   const nav = useNavigate();
+  const location = useLocation();
 
-  const scrollToSection = (sectionId) => {
-    const element = document.getElementById(sectionId);
-    if (element) {
-      // 헤더의 높이(h-16 = 64px) + 여백(옵션)만큼 빼줍니다.
-      const headerOffset = 64; 
-      // 현재 요소의 위치를 계산합니다.
-      const elementPosition = element.getBoundingClientRect().top;
-      // 현재 스크롤 위치에 요소의 위치를 더하고 헤더 높이만큼 뺍니다.
-      const offsetPosition = elementPosition + window.scrollY - headerOffset;
-
-      // 계산된 위치로 부드럽게 스크롤합니다.
+  // 💡 로고 클릭 시 실행될 함수 추가
+  const handleLogoClick = () => {
+    if (location.pathname !== "/") {
+      // 메인 페이지가 아니라면 메인으로 이동 (해시 없이)
+      nav("/");
+      // 페이지 이동 후 자동으로 최상단에 위치하게 됩니다.
+    } else {
+      // 메인 페이지라면 부드럽게 최상단으로 스크롤
       window.scrollTo({
-        top: offsetPosition,
+        top: 0,
         behavior: "smooth"
       });
+    }
+  };
+
+  const scrollToSection = (sectionId) => {
+    if (location.pathname !== "/") {
+      nav(`/#${sectionId}`);
+    } else {
+      const element = document.getElementById(sectionId);
+      if (element) {
+        const headerOffset = 64; 
+        const elementPosition = element.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.scrollY - headerOffset;
+
+        window.scrollTo({
+          top: offsetPosition,
+          behavior: "smooth"
+        });
+      }
+    }
+  };
+
+  const handleSolutionClick = () => {
+    if (location.pathname === "/analyze") {
+      window.location.reload();
+    } else {
+      nav("/analyze");
     }
   };
 
@@ -25,10 +49,10 @@ export default function Header() {
     <header className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">
       <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
         
-        {/* 로고 영역 */}
+        {/* 로고 영역 - handleLogoClick 연결 */}
         <div 
           className="text-xl font-extrabold text-slate-900 cursor-pointer tracking-tighter hover:text-[#3182f6] transition-colors duration-300"
-          onClick={() => nav("/")} 
+          onClick={handleLogoClick} 
         >
           DBDBDEEP
         </div>
@@ -48,7 +72,7 @@ export default function Header() {
 
         {/* 솔루션 버튼 */}
         <button
-          onClick={() => nav("/analyze")}
+          onClick={handleSolutionClick}
           className="bg-[#3182f6] hover:bg-[#1b64da] text-white text-sm font-semibold py-2 px-5 rounded-lg transition"
         >
           솔루션 체험하기

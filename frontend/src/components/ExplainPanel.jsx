@@ -92,6 +92,10 @@ const ListBox = ({ title, items, emptyText, visualTitle = "", visualUrl = null }
 
 export default function ExplainPanel({ result }) {
   const topRegions = Array.isArray(result?.topRegions) ? result.topRegions.slice(0, 2) : [];
+  const isVideoRepresentativeEvidence = String(result?.evidenceBasis || "") === "video_representative_frame";
+  const representativeSampleIndex = Number.isFinite(Number(result?.representativeSampleIndex))
+    ? Number(result.representativeSampleIndex)
+    : null;
   const spatialFindings = Array.isArray(result?.spatialFindings)
     ? result.spatialFindings.map(compactFinding).filter(Boolean).slice(0, 3)
     : [];
@@ -250,6 +254,13 @@ export default function ExplainPanel({ result }) {
             </div>
           </div>
         </div>
+        {isVideoRepresentativeEvidence ? (
+          <div className="mb-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+            이 항목은 영상 전체 샘플 중 대표 프레임
+            {representativeSampleIndex !== null ? ` (샘플 ${representativeSampleIndex + 1})` : ""}
+            을 기준으로 분석한 결과입니다.
+          </div>
+        ) : null}
         <div className="flex flex-col gap-3">
           <ListBox
             title="공간 분석"

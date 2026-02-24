@@ -40,6 +40,8 @@ const EMPTY_RESULT = {
   interpretationGuide: [],
   nextSteps: [],
   caveats: [],
+  evidenceBasis: "",
+  representativeSampleIndex: null,
 };
 
 const INTERPRETATION_GUIDE_FALLBACK = [
@@ -213,6 +215,11 @@ function parseLegacyResult(response) {
   const representativeAssets = representative?.assets || {};
   const representativeEvidence = representative?.evidence || {};
   const representativeExplanation = representative?.explanation || {};
+  const hasRepresentativeEvidence =
+    representative && typeof representative === "object" && Object.keys(representative).length > 0;
+  const representativeSampleIndex = Number.isFinite(Number(representative?.sample_index))
+    ? Number(representative.sample_index)
+    : null;
 
   const videoFrameConfidences = toFiniteArray(data.video_frame_confidences);
   const videoFramePixelScores = toFiniteArray(data.video_frame_pixel_scores);
@@ -327,6 +334,8 @@ function parseLegacyResult(response) {
         : INTERPRETATION_GUIDE_FALLBACK,
     nextSteps: representativeNextSteps.length > 0 ? representativeNextSteps : timelineExplain.nextSteps,
     caveats: representativeCaveats.length > 0 ? representativeCaveats : timelineExplain.caveats,
+    evidenceBasis: hasRepresentativeEvidence ? "video_representative_frame" : "",
+    representativeSampleIndex,
   };
 }
 
@@ -389,6 +398,8 @@ function parseEvidenceResult(response) {
       : INTERPRETATION_GUIDE_FALLBACK,
     nextSteps: Array.isArray(explanation?.next_steps) ? explanation.next_steps : [],
     caveats: Array.isArray(explanation?.caveats) ? explanation.caveats : [],
+    evidenceBasis: "image_face",
+    representativeSampleIndex: null,
   };
 }
 
@@ -415,16 +426,19 @@ async function analyzeWithFastAPI(file, fileType) {
   });
 
   const bodyText = await response.text();
-  let json;
+  let json = null;
 
   try {
     json = JSON.parse(bodyText);
   } catch {
+    if (!response.ok) {
+      throw new Error(bodyText || `분석 요청 실패 (status: ${response.status})`);
+    }
     throw new Error(`서버 응답 파싱 실패 (status: ${response.status})`);
   }
 
   if (!response.ok) {
-    throw new Error(json?.detail || `분석 요청 실패 (status: ${response.status})`);
+    throw new Error(json?.detail || bodyText || `분석 요청 실패 (status: ${response.status})`);
   }
 
   return json;
@@ -448,16 +462,19 @@ async function analyzeMediaUrlWithFastAPI(imageUrl) {
   });
 
   const bodyText = await response.text();
-  let json;
+  let json = null;
 
   try {
     json = JSON.parse(bodyText);
   } catch {
+    if (!response.ok) {
+      throw new Error(bodyText || `분석 요청 실패 (status: ${response.status})`);
+    }
     throw new Error(`서버 응답 파싱 실패 (status: ${response.status})`);
   }
 
   if (!response.ok) {
-    throw new Error(json?.detail || `분석 요청 실패 (status: ${response.status})`);
+    throw new Error(json?.detail || bodyText || `분석 요청 실패 (status: ${response.status})`);
   }
 
   const mediaHint = String(json?.input_media_type || json?.data?.input_media_type || "").toLowerCase();

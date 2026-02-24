@@ -1408,6 +1408,18 @@ def explain_from_evidence(
     energy_map = {x["band"]: x["energy_ratio"] for x in freq.get("band_energy", []) if "band" in x}
     energy_dom = str(freq.get("dominant_energy_band", "unknown"))
 
+    band_semantics = {
+        "low": "얼굴의 큰 윤곽과 완만한 밝기/색 변화 같은 저해상 구조",
+        "mid": "눈·코·입 경계와 피부 결 같은 중간 규모 텍스처",
+        "high": "미세 경계, 세부 노이즈, 샤프닝/압축 잔상에 민감한 성분",
+    }
+
+    if dom == "unknown" and band_map:
+        try:
+            dom = max(band_map.keys(), key=lambda b: abs(float(band_map[b])))
+        except Exception:
+            dom = "unknown"
+
     fake_prob = float(score.get("p_final", 0.0))
     fake_prob = max(0.0, min(1.0, fake_prob))
     real_prob = 1.0 - fake_prob
@@ -1449,17 +1461,35 @@ def explain_from_evidence(
             summary_source = "openai"
 
     spatial_findings = []
-    for item in top:
-        region = _region(item.get("region", "face"))
-        importance = float(item.get("importance_cam", 0.0))
-        claim = f"{region}에서 모델 반응이 높게 나타났습니다."
-        evidence_txt = f"CAM {importance:.2f}"
-        delta = item.get("delta_occlusion")
-        if delta is not None:
+    if top:
+        region_tokens = []
+        for item in top:
+            region = _region(item.get("region", "face"))
+            importance = float(item.get("importance_cam", 0.0))
+            region_tokens.append(f"{region} CAM {importance:.2f}")
+        spatial_findings.append(
+            {
+                "claim": "주요 부위(CAM) 기준으로 모델이 특히 주목한 위치를 확인했습니다.",
+                "evidence": " · ".join(region_tokens),
+            }
+        )
+
+        occlusion_tokens = []
+        for item in top:
+            delta = item.get("delta_occlusion")
+            if delta is None:
+                continue
+            region = _region(item.get("region", "face"))
             delta_f = float(delta) * 100.0
             direction = "증가" if delta_f > 0 else ("감소" if delta_f < 0 else "변화 거의 없음")
-            evidence_txt += f", 해당 부위를 가리면 fake 확률 {abs(delta_f):.1f}% {direction}"
-        spatial_findings.append({"claim": claim, "evidence": evidence_txt})
+            occlusion_tokens.append(f"{region} {abs(delta_f):.1f}% {direction}")
+        if occlusion_tokens:
+            spatial_findings.append(
+                {
+                    "claim": "해당 부위를 가렸을 때 점수 변화를 함께 점검했습니다.",
+                    "evidence": " · ".join(occlusion_tokens),
+                }
+            )
 
     outside_face_ratio = spatial.get("outside_face_ratio", None)
     localization_conf = str(spatial.get("localization_confidence", "unknown"))
@@ -1486,25 +1516,44 @@ def explain_from_evidence(
     frequency_findings = []
     if dom in band_map:
         delta_f = float(band_map[dom]) * 100.0
-        direction = "증가" if delta_f > 0 else ("감소" if delta_f < 0 else "변화 거의 없음")
         frequency_findings.append(
             {
-                "claim": f"{_band(dom)} 대역 변화가 결과에 크게 영향을 줬습니다.",
-                "evidence": f"{_band(dom)}를 제거하면 fake 확률이 {abs(delta_f):.1f}% {direction}",
+                "claim": f"우세 주파수 대역은 {_band(dom)}로 확인됐습니다.",
+                "evidence": f"{_band(dom)} 제거 기준 Δfake {delta_f:+.1f}%",
             }
         )
     else:
         frequency_findings.append(
             {
-                "claim": "대역 제거 실험에서 큰 변화는 보이지 않았습니다.",
-                "evidence": "대역 제거 전후 점수 차이가 작거나 계산되지 않았습니다.",
+                "claim": "우세 주파수 대역은 미확정입니다.",
+                "evidence": "밴드 제거 전후 점수 변화가 작거나 계산되지 않아 대역 우세를 단정하기 어렵습니다.",
             }
         )
 
+    if band_map:
+        band_delta_tokens = []
+        for b in ("low", "mid", "high"):
+            if b not in band_map:
+                continue
+            delta_f = float(band_map[b]) * 100.0
+            band_delta_tokens.append(f"{_band(b)} {delta_f:+.1f}%")
+        if band_delta_tokens:
+            frequency_findings.append(
+                {
+                    "claim": "밴드 제거 민감도(Δfake)를 대역별로 비교했습니다.",
+                    "evidence": " · ".join(band_delta_tokens) + " (+: fake↑, -: fake↓)",
+                }
+            )
+
+    dominant_energy_label = _band(energy_dom)
+    semantic_hint = band_semantics.get(energy_dom)
+    energy_claim = f"밴드 에너지 비율 기준 우세 대역은 {dominant_energy_label}입니다."
+    if semantic_hint:
+        energy_claim = f"{energy_claim} {semantic_hint} 신호가 상대적으로 두드러졌습니다."
     frequency_findings.append(
         {
-            "claim": f"에너지 우세 대역은 {_band(energy_dom)}입니다.",
-            "evidence": f"low {low:.1f}%, mid {mid:.1f}%, high {high:.1f}%",
+            "claim": energy_claim,
+            "evidence": f"저주파 {low:.1f}% · 중주파 {mid:.1f}% · 고주파 {high:.1f}%",
         }
     )
 

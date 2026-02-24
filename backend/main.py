@@ -81,6 +81,17 @@ REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 REMOTE_VIDEO_MAX_BYTES = 200 * 1024 * 1024
 REMOTE_IMAGE_TIMEOUT_SEC = 10
 REMOTE_VIDEO_TIMEOUT_SEC = 45
+YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
+REMOTE_COMMON_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
+VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
 
 
 def store_result_and_make_response(analysis_result: dict, stored_result: dict = None) -> dict:
@@ -165,6 +176,11 @@ def _is_likely_social_video_url(url: str) -> bool:
     return any(domain in host for domain in ("youtube.com", "youtu.be", "instagram.com"))
 
 
+def _is_likely_ext(path: str, ext_set: set) -> bool:
+    path = (path or "").lower()
+    return any(path.endswith(ext) for ext in ext_set)
+
+
 def _pick_ytdlp_primary_info(info: dict) -> dict:
     if isinstance(info, dict) and str(info.get("_type", "")).lower() == "playlist":
         entries = info.get("entries") or []
@@ -206,6 +222,72 @@ def _resolve_ytdlp_downloaded_path(ydl: Any, info: dict, workdir: str) -> Option
     return candidates[0][1]
 
 
+def _humanize_ytdlp_error(raw_msg: str) -> str:
+    msg = (raw_msg or "").strip()
+    low = msg.lower()
+
+    if "unsupported url" in low:
+        return "지원하지 않는 URL입니다. 원본 이미지/영상 링크 또는 공개된 Shorts/Reels 링크를 입력해 주세요."
+    if "sign in to confirm you're not a bot" in low:
+        return (
+            "YouTube가 자동화 접근을 차단했습니다. "
+            "서버에 yt-dlp cookie 설정(예: cookiefile)을 추가하거나 다른 공개 URL로 시도해 주세요."
+        )
+    if "instagram" in low and "unable to extract video url" in low:
+        return (
+            "Instagram URL에서 영상 주소를 추출하지 못했습니다. "
+            "공개 게시물인지 확인하고, 필요 시 서버의 yt-dlp/cookie 설정을 점검해 주세요."
+        )
+    return msg or "알 수 없는 yt-dlp 오류"
+
+
+def _pick_stream_url_from_info(info: dict) -> Optional[str]:
+    if not isinstance(info, dict):
+        return None
+
+    direct = info.get("url")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    formats = info.get("formats")
+    if isinstance(formats, list):
+        # progressive(mp4) 형태를 우선 선택, 없으면 가장 큰 비트레이트 후보 사용.
+        scored = []
+        for fmt in formats:
+            if not isinstance(fmt, dict):
+                continue
+            cand = fmt.get("url")
+            if not isinstance(cand, str) or not cand.strip():
+                continue
+            ext = str(fmt.get("ext") or "").lower()
+            vcodec = str(fmt.get("vcodec") or "")
+            acodec = str(fmt.get("acodec") or "")
+            tbr = float(fmt.get("tbr") or 0.0)
+            prefer_progressive = 1 if vcodec != "none" and acodec != "none" else 0
+            prefer_mp4 = 1 if ext == "mp4" else 0
+            scored.append(((prefer_progressive, prefer_mp4, tbr), cand.strip()))
+        if scored:
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return scored[0][1]
+    return None
+
+
+def _download_remote_bytes(url: str, timeout_sec: int, max_bytes: int) -> tuple[bytes, str]:
+    with requests.get(
+        url,
+        stream=True,
+        timeout=timeout_sec,
+        allow_redirects=True,
+        headers=REMOTE_COMMON_HEADERS,
+    ) as resp:
+        resp.raise_for_status()
+        content_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        data = _read_response_content_limited(resp, max_bytes)
+    if not data:
+        raise HTTPException(status_code=400, detail="다운로드한 미디어 데이터가 비어 있습니다.")
+    return data, content_type
+
+
 def _download_media_with_ytdlp(url: str) -> Dict[str, Any]:
     if yt_dlp is None:
         raise HTTPException(
@@ -224,7 +306,14 @@ def _download_media_with_ytdlp(url: str) -> Dict[str, Any]:
             "restrictfilenames": True,
             "merge_output_format": "mp4",
             "geo_bypass": True,
+            "retries": 2,
+            "extractor_retries": 2,
+            "fragment_retries": 2,
+            "http_headers": REMOTE_COMMON_HEADERS,
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
         }
+        if YTDLP_COOKIEFILE and os.path.exists(YTDLP_COOKIEFILE):
+            base_opts["cookiefile"] = YTDLP_COOKIEFILE
         # 플랫폼/코덱 조합별로 포맷 가용성이 다를 수 있어 순차 fallback.
         format_candidates = [
             "bestvideo*+bestaudio/best",
@@ -260,8 +349,48 @@ def _download_media_with_ytdlp(url: str) -> Dict[str, Any]:
                 continue
 
         if not downloaded_path or not os.path.exists(downloaded_path):
+            # 일부 환경에서는 download=True만 실패하고 metadata 추출(download=False)은 가능한 경우가 있어 fallback 시도.
+            try:
+                fallback_opts = dict(base_opts)
+                fallback_opts["skip_download"] = True
+                fallback_opts["format"] = "best[ext=mp4]/best"
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    raw_info = ydl.extract_info(url, download=False)
+                    info = _pick_ytdlp_primary_info(raw_info)
+                stream_url = _pick_stream_url_from_info(info)
+                if stream_url:
+                    ext = str(info.get("ext") or "").lower()
+                    vcodec = str(info.get("vcodec") or "").lower()
+                    is_video = (vcodec not in {"", "none"}) or (f".{ext}" in VIDEO_EXTS)
+                    max_bytes = REMOTE_VIDEO_MAX_BYTES if is_video else REMOTE_IMAGE_MAX_BYTES
+                    timeout = REMOTE_VIDEO_TIMEOUT_SEC if is_video else REMOTE_IMAGE_TIMEOUT_SEC
+                    media_bytes, content_type = _download_remote_bytes(stream_url, timeout, max_bytes)
+                    mime_type = content_type or (f"video/{ext}" if is_video and ext else f"image/{ext}" if ext else "")
+                    if is_video and not mime_type.startswith("video/"):
+                        mime_type = "video/mp4"
+                    if (not is_video) and not mime_type.startswith("image/"):
+                        mime_type = "image/jpeg"
+                    thumbnail_url = info.get("thumbnail") if isinstance(info, dict) else None
+                    title = str(info.get("title") or "").strip() if isinstance(info, dict) else ""
+                    return {
+                        "media_type": "video" if is_video else "image",
+                        "mime_type": mime_type,
+                        "bytes": media_bytes,
+                        "filename": _filename_from_url(url, fallback=f"downloaded_media.{ext or 'bin'}"),
+                        "preview": {
+                            "kind": "video" if is_video else "image",
+                            "url": stream_url,
+                            "thumbnail_url": str(thumbnail_url or "").strip() or None,
+                            "page_url": url,
+                            "title": title or None,
+                        },
+                    }
+            except Exception:
+                pass
+
             if last_exc is not None:
-                raise HTTPException(status_code=400, detail=f"URL 미디어 다운로드 실패(yt-dlp): {last_exc}") from last_exc
+                user_msg = _humanize_ytdlp_error(str(last_exc))
+                raise HTTPException(status_code=400, detail=f"URL 미디어 다운로드 실패(yt-dlp): {user_msg}") from last_exc
             raise HTTPException(status_code=400, detail="yt-dlp 다운로드 결과 파일을 찾지 못했습니다.")
 
         # cert 오류를 겪은 경우, 마지막 fallback로 인증서 검증 비활성화 1회 재시도
@@ -465,12 +594,15 @@ async def analyze_with_evidence(
 @app.post("/api/analyze-url")
 @app.post("/analyze-url")
 async def analyze_url_with_evidence(
-    image_url: str = Form(...),
+    image_url: Optional[str] = Form(None),
+    url: Optional[str] = Form(None),
     explain: bool = Form(True),
     evidence_level: str = Form("mvp"),
     fusion_w: float = Form(0.5),
 ):
-    raw_url = (image_url or "").strip()
+    raw_url = (image_url or url or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="분석할 URL을 입력해 주세요.")
     parsed = urlparse(raw_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(status_code=400, detail="유효한 http/https URL을 입력하세요.")
@@ -480,11 +612,18 @@ async def analyze_url_with_evidence(
     # 1) 일반 이미지/비디오 직링크는 requests로 우선 처리
     if not _is_likely_social_video_url(target_url):
         try:
-            with requests.get(target_url, stream=True, timeout=REMOTE_IMAGE_TIMEOUT_SEC, allow_redirects=True) as resp:
+            with requests.get(
+                target_url,
+                stream=True,
+                timeout=REMOTE_IMAGE_TIMEOUT_SEC,
+                allow_redirects=True,
+                headers=REMOTE_COMMON_HEADERS,
+            ) as resp:
                 resp.raise_for_status()
                 content_type = (resp.headers.get("content-type") or "").lower()
+                final_path = urlparse(str(resp.url or target_url)).path.lower()
 
-                if content_type.startswith("image/"):
+                if content_type.startswith("image/") or _is_likely_ext(final_path, IMAGE_EXTS):
                     data = _read_response_content_limited(resp, REMOTE_IMAGE_MAX_BYTES)
                     if not data:
                         raise HTTPException(status_code=400, detail="다운로드한 이미지 데이터가 비어 있습니다.")
@@ -504,7 +643,7 @@ async def analyze_url_with_evidence(
                         input_media_type="image",
                     )
 
-                if content_type.startswith("video/"):
+                if content_type.startswith("video/") or _is_likely_ext(final_path, VIDEO_EXTS):
                     data = _read_response_content_limited(resp, REMOTE_VIDEO_MAX_BYTES)
                     if not data:
                         raise HTTPException(status_code=400, detail="다운로드한 영상 데이터가 비어 있습니다.")

@@ -7,7 +7,6 @@ pydantic==2.6.*
 PyYAML==6.0.*
 requests==2.31.*
 redis==5.0.*
-yt-dlp==2025.2.19
 
 pillow==10.*
 opencv-python-headless==4.9.*
@@ -21,3 +20,5 @@ grad-cam==1.5.*
 insightface==0.7.3
 onnx==1.15.*
 onnxruntime-gpu==1.17.*
+
+yt-dlp

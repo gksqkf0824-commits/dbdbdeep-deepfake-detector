@@ -215,25 +215,57 @@ def _download_media_with_ytdlp(url: str) -> Dict[str, Any]:
 
     with tempfile.TemporaryDirectory(prefix="url_media_") as tmp_dir:
         outtmpl = os.path.join(tmp_dir, "%(id)s.%(ext)s")
-        ydl_opts = {
+        base_opts = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "socket_timeout": REMOTE_VIDEO_TIMEOUT_SEC,
             "outtmpl": outtmpl,
-            "format": "best",
             "restrictfilenames": True,
+            "merge_output_format": "mp4",
+            "geo_bypass": True,
         }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                raw_info = ydl.extract_info(url, download=True)
-                info = _pick_ytdlp_primary_info(raw_info)
-                downloaded_path = _resolve_ytdlp_downloaded_path(ydl, info, tmp_dir)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"URL 미디어 다운로드 실패(yt-dlp): {exc}") from exc
+        # 플랫폼/코덱 조합별로 포맷 가용성이 다를 수 있어 순차 fallback.
+        format_candidates = [
+            "bestvideo*+bestaudio/best",
+            "best/bestvideo+bestaudio",
+            None,
+        ]
+
+        info = {}
+        downloaded_path = None
+        cert_error_seen = False
+        last_exc: Optional[Exception] = None
+
+        for fmt in format_candidates:
+            attempt_opts = dict(base_opts)
+            if fmt:
+                attempt_opts["format"] = fmt
+            if cert_error_seen:
+                # 런타임 CA 체인 이슈가 있는 환경 fallback.
+                attempt_opts["nocheckcertificate"] = True
+
+            try:
+                with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                    raw_info = ydl.extract_info(url, download=True)
+                    info = _pick_ytdlp_primary_info(raw_info)
+                    downloaded_path = _resolve_ytdlp_downloaded_path(ydl, info, tmp_dir)
+                if downloaded_path and os.path.exists(downloaded_path):
+                    break
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc)
+                if "CERTIFICATE_VERIFY_FAILED" in msg or "certificate verify failed" in msg.lower():
+                    cert_error_seen = True
+                continue
 
         if not downloaded_path or not os.path.exists(downloaded_path):
+            if last_exc is not None:
+                raise HTTPException(status_code=400, detail=f"URL 미디어 다운로드 실패(yt-dlp): {last_exc}") from last_exc
             raise HTTPException(status_code=400, detail="yt-dlp 다운로드 결과 파일을 찾지 못했습니다.")
+
+        # cert 오류를 겪은 경우, 마지막 fallback로 인증서 검증 비활성화 1회 재시도
+        # (상단 포맷 루프에서 cert_error_seen 시 이미 nocheckcertificate=True 로 재시도됨)
 
         mime_type, _ = mimetypes.guess_type(downloaded_path)
         mime_type = str(mime_type or "").lower()

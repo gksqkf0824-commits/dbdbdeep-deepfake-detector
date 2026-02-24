@@ -223,24 +223,29 @@ export default function ExplainPanel({ result }) {
               type="button"
               className="text-xs font-medium text-slate-400 hover:text-slate-500 transition-colors"
             >
-              해석 가이드
+              가이드
             </button>
-            <div className="absolute right-0 top-6 z-20 w-[460px] max-w-[90vw] rounded-lg border border-slate-200 bg-white p-4 shadow-xl opacity-0 invisible transition-all duration-150 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible">
-              <div className="text-sm font-semibold text-slate-900 mb-3">해석 가이드</div>
-              <div className="space-y-2">
-                {INTERPRETATION_GUIDE_ITEMS.map((line, idx) => (
-                  <div key={`guide-item-${idx}`} className="text-xs text-slate-600 leading-relaxed">
-                    {line}
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 text-sm font-semibold text-slate-900 mb-2">참고사항</div>
-              <div className="space-y-2">
-                {INTERPRETATION_GUIDE_REFERENCES.map((line, idx) => (
-                  <div key={`guide-ref-${idx}`} className="text-xs text-slate-600 leading-relaxed">
-                    {line}
-                  </div>
-                ))}
+            <div
+              className="absolute right-0 top-6 z-20 overflow-x-auto rounded-lg border border-slate-200 bg-white p-4 shadow-xl opacity-0 invisible transition-all duration-150 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible"
+              style={{ width: "max-content", maxWidth: "calc(100vw - 24px)" }}
+            >
+              <div className="min-w-max">
+                <div className="text-sm font-semibold text-slate-900 mb-3">해석 가이드</div>
+                <div className="space-y-2">
+                  {INTERPRETATION_GUIDE_ITEMS.map((line, idx) => (
+                    <div key={`guide-item-${idx}`} className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
+                      {line}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 text-sm font-semibold text-slate-900 mb-2">참고사항</div>
+                <div className="space-y-2">
+                  {INTERPRETATION_GUIDE_REFERENCES.map((line, idx) => (
+                    <div key={`guide-ref-${idx}`} className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
+                      {line}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>

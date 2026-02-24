@@ -37,18 +37,17 @@ const EMPTY_RESULT = {
   bandEnergy: [],
   spatialVisualUrl: null,
   frequencyVisualUrl: null,
+  interpretationGuide: [],
   nextSteps: [],
   caveats: [],
 };
 
-const GUIDE_CAUTION_FALLBACK = [
-  "Wavelet 주파수 단위는 시간 주파수(Hz)가 아니라 공간 주파수(cycles/pixel) 기준입니다.",
-  "강한 압축이나 저해상도는 고주파 성분을 왜곡해 판독 민감도를 낮출 수 있습니다.",
-];
-
-const GUIDE_RECOMMEND_FALLBACK = [
-  "CAM 주요 부위, 우세 주파수 대역, Δfake, 밴드 에너지 비율을 함께 해석하세요.",
-  "가능하면 원본에 가까운 고해상도 파일 또는 추가 샘플로 교차 검증하세요.",
+const INTERPRETATION_GUIDE_FALLBACK = [
+  "CAM은 모델이 상대적으로 주목한 위치를 보여주는 참고 지표입니다.",
+  "우세 대역과 Δfake(대역 제거 전후 fake 확률 변화)를 함께 보면 영향 방향을 읽기 쉽습니다.",
+  "밴드 에너지 비율은 저/중/고주파 중 어느 구간의 신호가 더 강한지 보여줍니다.",
+  "저주파는 큰 윤곽, 중주파는 얼굴 경계/피부 결, 고주파는 미세 경계·압축 흔적 해석에 유용합니다.",
+  "주파수 단위는 Hz가 아니라 cycles/pixel이므로 해상도·압축 상태에 따라 해석 민감도가 달라질 수 있습니다.",
 ];
 
 const clampProb = (v) => Math.max(0, Math.min(1, Number(v)));
@@ -71,20 +70,6 @@ function toRenderableImageUrl(url) {
   if (/^https?:\/\//i.test(url)) return url;
   if (url.startsWith("/")) return `${API_BASE}${url}`;
   return null;
-}
-
-function mergeGuideItems(baseItems, fallbackItems, limit = 3) {
-  const merged = [];
-  const pushIfValid = (value) => {
-    const text = String(value || "").trim();
-    if (!text || merged.includes(text)) return;
-    merged.push(text);
-  };
-
-  (Array.isArray(baseItems) ? baseItems : []).forEach(pushIfValid);
-  (Array.isArray(fallbackItems) ? fallbackItems : []).forEach(pushIfValid);
-
-  return merged.slice(0, limit);
 }
 
 function buildCommonComment({ isFake, confidence, pixelScore, freqScore }) {
@@ -245,6 +230,9 @@ function parseLegacyResult(response) {
   const representativeNextSteps = Array.isArray(representativeExplanation?.next_steps)
     ? representativeExplanation.next_steps
     : [];
+  const representativeInterpretationGuide = Array.isArray(representativeExplanation?.interpretation_guide)
+    ? representativeExplanation.interpretation_guide
+    : [];
 
   const spatialVisualUrl = toRenderableImageUrl(representativeAssets?.gradcam_overlay_url || "");
   const frequencyVisualUrl = toRenderableImageUrl(representativeAssets?.wavelet_signature_url || "");
@@ -312,14 +300,12 @@ function parseLegacyResult(response) {
         : timelineExplain.frequencyFindings,
     spatialVisualUrl,
     frequencyVisualUrl,
-    nextSteps: mergeGuideItems(
-      GUIDE_RECOMMEND_FALLBACK,
-      representativeNextSteps.length > 0 ? representativeNextSteps : timelineExplain.nextSteps
-    ),
-    caveats: mergeGuideItems(
-      GUIDE_CAUTION_FALLBACK,
-      representativeCaveats.length > 0 ? representativeCaveats : timelineExplain.caveats
-    ),
+    interpretationGuide:
+      representativeInterpretationGuide.length > 0
+        ? representativeInterpretationGuide
+        : INTERPRETATION_GUIDE_FALLBACK,
+    nextSteps: representativeNextSteps.length > 0 ? representativeNextSteps : timelineExplain.nextSteps,
+    caveats: representativeCaveats.length > 0 ? representativeCaveats : timelineExplain.caveats,
   };
 }
 
@@ -377,8 +363,11 @@ function parseEvidenceResult(response) {
     bandEnergy: Array.isArray(freqEvidence?.band_energy) ? freqEvidence.band_energy : [],
     spatialVisualUrl,
     frequencyVisualUrl,
-    nextSteps: mergeGuideItems(GUIDE_RECOMMEND_FALLBACK, explanation?.next_steps),
-    caveats: mergeGuideItems(GUIDE_CAUTION_FALLBACK, explanation?.caveats),
+    interpretationGuide: Array.isArray(explanation?.interpretation_guide)
+      ? explanation.interpretation_guide
+      : INTERPRETATION_GUIDE_FALLBACK,
+    nextSteps: Array.isArray(explanation?.next_steps) ? explanation.next_steps : [],
+    caveats: Array.isArray(explanation?.caveats) ? explanation.caveats : [],
   };
 }
 

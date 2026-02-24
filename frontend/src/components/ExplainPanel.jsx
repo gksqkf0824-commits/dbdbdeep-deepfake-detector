@@ -55,8 +55,8 @@ const ListBox = ({ title, items, emptyText, visualTitle = "", visualUrl = null }
     {visualUrl ? (
       <div className="mt-3">
         {visualTitle ? <div className="text-xs font-semibold text-slate-500 mb-2">{visualTitle}</div> : null}
-        <div className="rounded-md border border-slate-200 bg-slate-100 overflow-hidden">
-          <img src={visualUrl} alt={visualTitle || title} className="w-full h-auto object-contain" />
+        <div className="w-[200px] h-[200px] rounded-md border border-slate-200 bg-slate-100 overflow-hidden flex items-center justify-center">
+          <img src={visualUrl} alt={visualTitle || title} className="w-full h-full object-contain" />
         </div>
       </div>
     ) : null}
@@ -87,6 +87,9 @@ export default function ExplainPanel({ result }) {
     : [];
   const nextSteps = Array.isArray(result?.nextSteps)
     ? result.nextSteps.map((v) => String(v || "").trim()).filter(Boolean).slice(0, 3)
+    : [];
+  const interpretationGuide = Array.isArray(result?.interpretationGuide)
+    ? result.interpretationGuide.map((v) => String(v || "").trim()).filter(Boolean).slice(0, 6)
     : [];
   const bandEnergy = Array.isArray(result?.bandEnergy) ? result.bandEnergy : [];
 
@@ -224,6 +227,23 @@ export default function ExplainPanel({ result }) {
         <div className="flex flex-col gap-3">
           <ListBox title="⚠️ 주의" items={caveats} emptyText="추가 주의사항이 없습니다." />
           <ListBox title="✅ 권장" items={nextSteps} emptyText="추가 권장사항이 없습니다." />
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="text-sm font-semibold text-slate-900 mb-3">📌 해석 가이드</div>
+        <div className="rounded-md border border-slate-200 bg-white p-4">
+          {interpretationGuide.length > 0 ? (
+            <div className="space-y-2">
+              {interpretationGuide.map((line, idx) => (
+                <div key={`guide-${idx}`} className="text-sm text-slate-600 leading-relaxed">
+                  {line}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-slate-400">해석 가이드가 아직 없습니다.</div>
+          )}
         </div>
       </div>
     </div>

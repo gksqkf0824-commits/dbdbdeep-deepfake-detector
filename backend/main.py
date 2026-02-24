@@ -198,6 +198,7 @@ def _analyze_evidence_bytes(
                 item["explanation"] = explain_from_evidence(
                     evidence=evidence,
                     score=score,
+                    media_mode_hint="image",
                     use_openai=(i == 0),
                 )
 
@@ -471,7 +472,8 @@ async def analyze_video(file: UploadFile = File(...)):
                         "explanation": explain_from_evidence(
                             evidence=rep_out.get("evidence", {}),
                             score=rep_out.get("score", {}),
-                            use_openai=False,
+                            media_mode_hint="video",
+                            use_openai=True,
                         ),
                     }
         except Exception:

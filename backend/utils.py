@@ -2,6 +2,7 @@ import json
 import hashlib
 import base64
 import os
+import re
 from typing import Dict, Any, Optional, List, Tuple
 
 import numpy as np
@@ -1135,6 +1136,167 @@ def _call_openai_comment(system_prompt: str, user_prompt: str, max_output_tokens
     return None
 
 
+_INTERPRETATION_GUIDE_PROMPT_CACHE: Optional[str] = None
+_INTERPRETATION_GUIDE_PROMPT_FALLBACK = (
+    "당신은 일반 사용자를 위한 딥페이크 분석 해석 안내자다. "
+    "반드시 evidence 기반으로만 설명하고, 단정 대신 가능성 중심으로 말하라. "
+    "어려운 용어는 짧게 풀어서 설명하라."
+)
+
+
+def _load_interpretation_guide_prompt_text() -> str:
+    global _INTERPRETATION_GUIDE_PROMPT_CACHE
+    if _INTERPRETATION_GUIDE_PROMPT_CACHE is not None:
+        return _INTERPRETATION_GUIDE_PROMPT_CACHE
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates: List[str] = []
+
+    env_path = os.getenv("INTERPRETATION_GUIDE_PROMPT_PATH", "").strip()
+    if env_path:
+        candidates.append(env_path)
+
+    candidates.append(os.path.join(base_dir, "Interpretation_Guide_Prompt.md"))
+    candidates.append(os.path.join(os.path.dirname(base_dir), "docs", "Interpretation_Guide_Prompt.md"))
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = str(f.read() or "").strip()
+            if text:
+                _INTERPRETATION_GUIDE_PROMPT_CACHE = text
+                return text
+        except Exception:
+            continue
+
+    _INTERPRETATION_GUIDE_PROMPT_CACHE = _INTERPRETATION_GUIDE_PROMPT_FALLBACK
+    return _INTERPRETATION_GUIDE_PROMPT_CACHE
+
+
+def _parse_guide_items_from_text(raw_text: str, max_items: int = 6) -> List[str]:
+    text = str(raw_text or "").strip()
+    if not text:
+        return []
+
+    if "```" in text:
+        text = text.replace("```json", "").replace("```", "").strip()
+
+    parsed_items: List[str] = []
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, list):
+            parsed_items = [str(v).strip() for v in obj if str(v).strip()]
+        elif isinstance(obj, dict):
+            for key in ("interpretation_guide", "guide", "items"):
+                value = obj.get(key)
+                if isinstance(value, list):
+                    parsed_items = [str(v).strip() for v in value if str(v).strip()]
+                    break
+    except Exception:
+        parsed_items = []
+
+    if not parsed_items:
+        chunks = re.split(r"(?:\s*\d+\.\s+)|(?:\s*[-•]\s+)|(?:\s*;\s*)", text)
+        parsed_items = [c.strip() for c in chunks if c and c.strip()]
+
+    deduped: List[str] = []
+    for item in parsed_items:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped[:max_items]
+
+
+def _fallback_interpretation_guide(
+    media_mode_hint: str,
+    top_regions_kor: List[str],
+    dominant_band_label: str,
+    low_pct: float,
+    mid_pct: float,
+    high_pct: float,
+) -> List[str]:
+    region_text = ", ".join(top_regions_kor) if top_regions_kor else "얼굴 핵심 부위"
+    base = [
+        f"CAM은 모델이 상대적으로 주목한 위치를 보여주는 참고 지표이며, 이번 샘플에서는 {region_text} 부위가 핵심 단서입니다.",
+        f"우세 주파수 대역은 {dominant_band_label}로 해석되며, 대역 제거 전후 점수 변화(Δfake)를 함께 보면 영향 방향을 파악할 수 있습니다.",
+        f"밴드 에너지 비율은 저주파 {low_pct:.1f}% · 중주파 {mid_pct:.1f}% · 고주파 {high_pct:.1f}%입니다.",
+        "저주파는 큰 윤곽/완만한 밝기 변화, 중주파는 눈·코·입 경계와 피부 결, 고주파는 미세 경계·압축 흔적 해석에 주로 사용됩니다.",
+        "주파수 단위는 Hz가 아니라 cycles/pixel 기준이므로, 해상도·압축 상태에 따라 해석 민감도가 달라질 수 있습니다.",
+    ]
+    if str(media_mode_hint or "").lower() == "video":
+        base[0] = (
+            f"영상 해석에서는 프레임 흐름과 함께 CAM 집중 영역({region_text})이 반복되는지 확인하면 판독 안정성을 더 높일 수 있습니다."
+        )
+    return base
+
+
+def generate_interpretation_guide(
+    *,
+    media_mode_hint: str,
+    fake_prob: float,
+    real_prob: float,
+    top_regions_kor: List[str],
+    dominant_band: str,
+    dominant_energy_band: str,
+    band_ablation: List[Dict[str, Any]],
+    band_energy: List[Dict[str, Any]],
+    freq_notes: List[str],
+    use_openai: bool = True,
+) -> List[str]:
+    band_label = {"low": "저주파", "mid": "중주파", "high": "고주파", "unknown": "미확정"}
+
+    def _band_ko(raw: str) -> str:
+        key = str(raw or "unknown")
+        return band_label.get(key, key)
+
+    low_pct = float(next((x.get("energy_ratio", 0.0) for x in band_energy if x.get("band") == "low"), 0.0)) * 100.0
+    mid_pct = float(next((x.get("energy_ratio", 0.0) for x in band_energy if x.get("band") == "mid"), 0.0)) * 100.0
+    high_pct = float(next((x.get("energy_ratio", 0.0) for x in band_energy if x.get("band") == "high"), 0.0)) * 100.0
+
+    dominant_band_label = _band_ko(dominant_band if dominant_band != "unknown" else dominant_energy_band)
+    fallback_items = _fallback_interpretation_guide(
+        media_mode_hint=media_mode_hint,
+        top_regions_kor=top_regions_kor,
+        dominant_band_label=dominant_band_label,
+        low_pct=low_pct,
+        mid_pct=mid_pct,
+        high_pct=high_pct,
+    )
+    if not use_openai:
+        return fallback_items
+
+    prompt_doc = _load_interpretation_guide_prompt_text()
+    payload = {
+        "score": {"p_final": round(float(fake_prob), 6)},
+        "fake_probability_percent": round(float(fake_prob) * 100.0, 1),
+        "real_probability_percent": round(float(real_prob) * 100.0, 1),
+        "verdict_mode": "fake_focus" if float(fake_prob) >= 0.5 else "real_focus",
+        "media_mode_hint": str(media_mode_hint or "image"),
+        "top_regions": top_regions_kor,
+        "dominant_band": str(dominant_band),
+        "dominant_energy_band": str(dominant_energy_band),
+        "band_ablation": band_ablation,
+        "band_energy": band_energy,
+        "notes": [str(x) for x in (freq_notes or [])],
+    }
+
+    system_prompt = (
+        "아래 문서를 규칙으로 사용해 사용자가 읽기 쉬운 해석 가이드를 작성하라.\n"
+        f"{prompt_doc}\n"
+    )
+    user_prompt = (
+        "아래 payload를 바탕으로 UI의 '📌 해석 가이드'에 넣을 문장을 5개 작성하라.\n"
+        "출력 형식은 JSON 배열 문자열만 허용한다. 예: [\"...\", \"...\"]\n"
+        "각 항목은 1문장으로 작성하고, 단정 대신 가능성 중심으로 설명한다.\n"
+        f"[payload]\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+    llm_text = _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=260)
+    llm_items = _parse_guide_items_from_text(llm_text or "", max_items=6)
+    if llm_items:
+        return llm_items
+    return fallback_items
+
+
 def generate_image_ai_comment(
     fake_prob: float,
     real_prob: float,
@@ -1345,6 +1507,7 @@ def build_evidence_for_face(
 def explain_from_evidence(
     evidence: Dict[str, Any],
     score: Dict[str, float],
+    media_mode_hint: str = "image",
     use_openai: bool = True,
 ) -> Dict[str, Any]:
     spatial = evidence.get("spatial", {})
@@ -1501,11 +1664,25 @@ def explain_from_evidence(
     ):
         caveats.insert(0, "일부 근거 실험이 생략되어, 이번 결과는 보수적으로 해석하는 편이 안전합니다.")
 
+    interpretation_guide = generate_interpretation_guide(
+        media_mode_hint=media_mode_hint,
+        fake_prob=fake_prob,
+        real_prob=real_prob,
+        top_regions_kor=top_regions_kor,
+        dominant_band=dom,
+        dominant_energy_band=energy_dom,
+        band_ablation=freq.get("band_ablation", []) if isinstance(freq.get("band_ablation", []), list) else [],
+        band_energy=freq.get("band_energy", []) if isinstance(freq.get("band_energy", []), list) else [],
+        freq_notes=[str(x) for x in (freq_notes or [])],
+        use_openai=use_openai,
+    )
+
     return {
         "summary": summary,
         "summary_source": summary_source,
         "spatial_findings": spatial_findings[:4],
         "frequency_findings": frequency_findings[:4],
+        "interpretation_guide": interpretation_guide[:6],
         "next_steps": [
             "원본에 가까운 고해상도 파일(재인코딩 전)로 한 번 더 교차 검증하세요.",
             "가능하면 다른 각도/조명 샘플을 추가해 같은 결론이 반복되는지 확인하세요.",

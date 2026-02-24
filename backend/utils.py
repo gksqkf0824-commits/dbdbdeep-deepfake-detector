@@ -690,7 +690,25 @@ class GradCAM:
             pass
 
     def __call__(self, x: torch.Tensor, class_idx: Optional[int] = None) -> np.ndarray:
-        idx = 1 if class_idx is None else int(class_idx)
+        # Binary logit(출력 채널=1) 모델과 multi-class(출력 채널>=2) 모델을 모두 안전하게 처리한다.
+        requested_idx = 1 if class_idx is None else int(class_idx)
+        idx = requested_idx
+        try:
+            with torch.no_grad():
+                y = self.model(x)
+                if isinstance(y, (tuple, list)) and y:
+                    y = y[0]
+            if isinstance(y, torch.Tensor) and y.ndim >= 2:
+                num_classes = int(y.shape[1])
+                if num_classes <= 1:
+                    idx = 0
+                else:
+                    idx = max(0, min(num_classes - 1, requested_idx))
+            else:
+                idx = 0 if class_idx is None else requested_idx
+        except Exception:
+            idx = 0 if class_idx is None else requested_idx
+
         targets = [ClassifierOutputTarget(idx)]
         cam_out = self._cam(input_tensor=x, targets=targets)
         cam_np = np.asarray(cam_out[0] if isinstance(cam_out, (list, tuple)) else cam_out, dtype=np.float32)

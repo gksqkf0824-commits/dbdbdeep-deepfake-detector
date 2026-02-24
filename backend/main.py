@@ -372,9 +372,11 @@ async def analyze_video(file: UploadFile = File(...)):
 
         # 4) per-frame inference
         scores, pixel_scores, freq_scores = [], [], []
+        successful_frames = []
+        successful_frame_indices = []
         failed = 0
 
-        for fr in frames:
+        for frame_idx, fr in enumerate(frames):
             try:
                 score, p_score, f_score, _ = detector.predict_from_bgr(
                     fr,
@@ -383,6 +385,8 @@ async def analyze_video(file: UploadFile = File(...)):
                 scores.append(score)
                 pixel_scores.append(p_score)
                 freq_scores.append(f_score)
+                successful_frames.append(fr)
+                successful_frame_indices.append(frame_idx)
             except Exception:
                 failed += 1
                 continue
@@ -424,7 +428,59 @@ async def analyze_video(file: UploadFile = File(...)):
         analysis_result["video_meta"].update(trimmed_meta)
         analysis_result["video_meta"].update(meta)
 
-        # 6-1) AI 코멘트 (OpenAI 사용, 실패 시 규칙 기반 fallback)
+        # 6-1) 대표 프레임 근거 생성: 집계 점수와 가장 가까운 프레임 기반
+        representative_payload = None
+        try:
+            if successful_frames and detector.pixel_model is not None and detector.freq_model is not None:
+                score_arr = np.asarray(scores, dtype=np.float32)
+                rep_pos = int(np.argmin(np.abs(score_arr - float(video_score))))
+                rep_frame_bgr = successful_frames[rep_pos]
+                rep_sample_index = int(successful_frame_indices[rep_pos])
+                rep_score = float(scores[rep_pos])
+
+                rep_faces = detect_faces_with_aligned_crops(
+                    image_bgr=rep_frame_bgr,
+                    margin=0.15,
+                    target_size=224,
+                    max_faces=1,
+                    prioritize_frontal=False,
+                )
+
+                if rep_faces:
+                    rep_cam = GradCAM(detector.pixel_model, get_cam_target_layer(detector.pixel_model))
+                    try:
+                        rep_out = build_evidence_for_face(
+                            face_rgb_uint8=rep_faces[0]["crop_rgb"],
+                            landmarks=rep_faces[0]["landmarks"],
+                            rgb_model=detector.pixel_model,
+                            freq_model=detector.freq_model,
+                            cam=rep_cam,
+                            fusion_w=0.5,
+                            evidence_level="mvp",
+                        )
+                    finally:
+                        rep_cam.close()
+
+                    representative_payload = {
+                        "sample_index": rep_sample_index,
+                        "frame_score": round(rep_score, 2),
+                        "target_score": round(float(video_score), 2),
+                        "abs_diff": round(abs(rep_score - float(video_score)), 2),
+                        "assets": rep_out.get("assets", {}),
+                        "evidence": rep_out.get("evidence", {}),
+                        "explanation": explain_from_evidence(
+                            evidence=rep_out.get("evidence", {}),
+                            score=rep_out.get("score", {}),
+                            use_openai=False,
+                        ),
+                    }
+        except Exception:
+            representative_payload = None
+
+        if representative_payload is not None:
+            analysis_result["representative_analysis"] = representative_payload
+
+        # 6-2) AI 코멘트 (OpenAI 사용, 실패 시 규칙 기반 fallback)
         ai_comment = generate_video_ai_comment(
             final_scores=[float(s) for s in scores],
             pixel_scores=[float(s) for s in pixel_scores],

@@ -49,9 +49,17 @@ const compactFinding = (item) => {
   return claim || evidence;
 };
 
-const ListBox = ({ title, items, emptyText }) => (
+const ListBox = ({ title, items, emptyText, visualTitle = "", visualUrl = null }) => (
   <div className="rounded-md border border-slate-200 bg-white p-4">
     <div className="text-sm font-semibold text-slate-900">{title}</div>
+    {visualUrl ? (
+      <div className="mt-3">
+        {visualTitle ? <div className="text-xs font-semibold text-slate-500 mb-2">{visualTitle}</div> : null}
+        <div className="rounded-md border border-slate-200 bg-slate-100 overflow-hidden">
+          <img src={visualUrl} alt={visualTitle || title} className="w-full h-auto object-contain" />
+        </div>
+      </div>
+    ) : null}
     {items.length > 0 ? (
       <div className="mt-3 space-y-2">
         {items.map((item, idx) => (
@@ -198,11 +206,15 @@ export default function ExplainPanel({ result }) {
             title="공간 분석"
             items={spatialFindings}
             emptyText="공간 분석 근거가 아직 없습니다."
+            visualTitle="Grad-CAM 분석 결과"
+            visualUrl={result?.spatialVisualUrl || null}
           />
           <ListBox
             title="주파수 분석"
             items={frequencyFindings}
             emptyText="주파수 분석 근거가 아직 없습니다."
+            visualTitle="Wavelet 분석 결과"
+            visualUrl={result?.frequencyVisualUrl || null}
           />
         </div>
       </div>

@@ -15,6 +15,7 @@ scikit-image==0.22.*
 
 scikit-learn==1.4.*
 tqdm==4.66.*
+grad-cam==1.5.*
 
 insightface==0.7.3
 onnx==1.15.*

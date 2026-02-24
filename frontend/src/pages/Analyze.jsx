@@ -35,9 +35,21 @@ const EMPTY_RESULT = {
   frequencyFindings: [],
   bandAblation: [],
   bandEnergy: [],
+  spatialVisualUrl: null,
+  frequencyVisualUrl: null,
   nextSteps: [],
   caveats: [],
 };
+
+const GUIDE_CAUTION_FALLBACK = [
+  "Wavelet 주파수 단위는 시간 주파수(Hz)가 아니라 공간 주파수(cycles/pixel) 기준입니다.",
+  "강한 압축이나 저해상도는 고주파 성분을 왜곡해 판독 민감도를 낮출 수 있습니다.",
+];
+
+const GUIDE_RECOMMEND_FALLBACK = [
+  "CAM 주요 부위, 우세 주파수 대역, Δfake, 밴드 에너지 비율을 함께 해석하세요.",
+  "가능하면 원본에 가까운 고해상도 파일 또는 추가 샘플로 교차 검증하세요.",
+];
 
 const clampProb = (v) => Math.max(0, Math.min(1, Number(v)));
 const toRealConfidence = (fakeProb) =>
@@ -59,6 +71,20 @@ function toRenderableImageUrl(url) {
   if (/^https?:\/\//i.test(url)) return url;
   if (url.startsWith("/")) return `${API_BASE}${url}`;
   return null;
+}
+
+function mergeGuideItems(baseItems, fallbackItems, limit = 3) {
+  const merged = [];
+  const pushIfValid = (value) => {
+    const text = String(value || "").trim();
+    if (!text || merged.includes(text)) return;
+    merged.push(text);
+  };
+
+  (Array.isArray(baseItems) ? baseItems : []).forEach(pushIfValid);
+  (Array.isArray(fallbackItems) ? fallbackItems : []).forEach(pushIfValid);
+
+  return merged.slice(0, limit);
 }
 
 function buildCommonComment({ isFake, confidence, pixelScore, freqScore }) {
@@ -177,6 +203,10 @@ function buildTimelineExplainData(timeline, isFake) {
 
 function parseLegacyResult(response) {
   const data = response?.data || response || {};
+  const representative = data?.representative_analysis || {};
+  const representativeAssets = representative?.assets || {};
+  const representativeEvidence = representative?.evidence || {};
+  const representativeExplanation = representative?.explanation || {};
 
   const videoFrameConfidences = toFiniteArray(data.video_frame_confidences);
   const videoFramePixelScores = toFiniteArray(data.video_frame_pixel_scores);
@@ -202,6 +232,25 @@ function parseLegacyResult(response) {
         ? Number(data.confidence) < 50
         : null;
   const timelineExplain = buildTimelineExplainData(timeline, inferredIsFake);
+
+  const representativeSpatialFindings = Array.isArray(representativeExplanation?.spatial_findings)
+    ? representativeExplanation.spatial_findings
+    : [];
+  const representativeFrequencyFindings = Array.isArray(representativeExplanation?.frequency_findings)
+    ? representativeExplanation.frequency_findings
+    : [];
+  const representativeCaveats = Array.isArray(representativeExplanation?.caveats)
+    ? representativeExplanation.caveats
+    : [];
+  const representativeNextSteps = Array.isArray(representativeExplanation?.next_steps)
+    ? representativeExplanation.next_steps
+    : [];
+
+  const spatialVisualUrl = toRenderableImageUrl(representativeAssets?.gradcam_overlay_url || "");
+  const frequencyVisualUrl = toRenderableImageUrl(representativeAssets?.wavelet_signature_url || "");
+
+  const representativeSpatialEvidence = representativeEvidence?.spatial || {};
+  const representativeFreqEvidence = representativeEvidence?.frequency || {};
 
   const preprocessed =
     data.preprocessed && typeof data.preprocessed === "object"
@@ -241,11 +290,36 @@ function parseLegacyResult(response) {
         pixelScore: data.pixel_score,
         freqScore: data.freq_score,
       }),
+    topRegions: Array.isArray(representativeSpatialEvidence?.regions_topk)
+      ? representativeSpatialEvidence.regions_topk
+      : [],
+    dominantBand: representativeFreqEvidence?.dominant_band || "",
+    dominantEnergyBand: representativeFreqEvidence?.dominant_energy_band || "",
+    bandAblation: Array.isArray(representativeFreqEvidence?.band_ablation)
+      ? representativeFreqEvidence.band_ablation
+      : [],
+    bandEnergy: Array.isArray(representativeFreqEvidence?.band_energy)
+      ? representativeFreqEvidence.band_energy
+      : [],
     explanationSummary: timelineExplain.summary,
-    spatialFindings: timelineExplain.spatialFindings,
-    frequencyFindings: timelineExplain.frequencyFindings,
-    nextSteps: timelineExplain.nextSteps,
-    caveats: timelineExplain.caveats,
+    spatialFindings:
+      representativeSpatialFindings.length > 0
+        ? representativeSpatialFindings
+        : timelineExplain.spatialFindings,
+    frequencyFindings:
+      representativeFrequencyFindings.length > 0
+        ? representativeFrequencyFindings
+        : timelineExplain.frequencyFindings,
+    spatialVisualUrl,
+    frequencyVisualUrl,
+    nextSteps: mergeGuideItems(
+      GUIDE_RECOMMEND_FALLBACK,
+      representativeNextSteps.length > 0 ? representativeNextSteps : timelineExplain.nextSteps
+    ),
+    caveats: mergeGuideItems(
+      GUIDE_CAUTION_FALLBACK,
+      representativeCaveats.length > 0 ? representativeCaveats : timelineExplain.caveats
+    ),
   };
 }
 
@@ -259,6 +333,8 @@ function parseEvidenceResult(response) {
   const explanation = firstFace?.explanation || {};
   const spatialEvidence = firstFace?.evidence?.spatial || {};
   const freqEvidence = firstFace?.evidence?.frequency || {};
+  const spatialVisualUrl = toRenderableImageUrl(firstFace?.assets?.gradcam_overlay_url || "");
+  const frequencyVisualUrl = toRenderableImageUrl(firstFace?.assets?.wavelet_signature_url || "");
 
   const hasDetectedFace = faces.length > 0;
   const confidence = hasDetectedFace ? toRealConfidence(score.p_final) : null;
@@ -299,8 +375,10 @@ function parseEvidenceResult(response) {
       : [],
     bandAblation: Array.isArray(freqEvidence?.band_ablation) ? freqEvidence.band_ablation : [],
     bandEnergy: Array.isArray(freqEvidence?.band_energy) ? freqEvidence.band_energy : [],
-    nextSteps: Array.isArray(explanation?.next_steps) ? explanation.next_steps : [],
-    caveats: Array.isArray(explanation?.caveats) ? explanation.caveats : [],
+    spatialVisualUrl,
+    frequencyVisualUrl,
+    nextSteps: mergeGuideItems(GUIDE_RECOMMEND_FALLBACK, explanation?.next_steps),
+    caveats: mergeGuideItems(GUIDE_CAUTION_FALLBACK, explanation?.caveats),
   };
 }
 

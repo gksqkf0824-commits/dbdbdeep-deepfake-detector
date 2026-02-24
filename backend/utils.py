@@ -10,6 +10,12 @@ import scipy.stats as stats
 import torch
 import torch.nn.functional as F
 import requests
+try:
+    from pytorch_grad_cam import GradCAM as PytorchGradCAM
+    from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+except Exception:
+    PytorchGradCAM = None
+    ClassifierOutputTarget = None
 
 from model import (
     detector,
@@ -668,58 +674,28 @@ def detect_faces_with_aligned_crops(
 
 class GradCAM:
     def __init__(self, model: torch.nn.Module, target_layer: torch.nn.Module):
+        if PytorchGradCAM is None or ClassifierOutputTarget is None:
+            raise RuntimeError(
+                "pytorch-grad-cam 라이브러리가 필요합니다. requirements.txt에 grad-cam 패키지를 설치해 주세요."
+            )
         self.model = model.eval()
         self.target_layer = target_layer
-        self._features: Optional[torch.Tensor] = None
-        self._grads: Optional[torch.Tensor] = None
-        self._hooks = []
-        self._register_hooks()
-
-    def _register_hooks(self) -> None:
-        def fwd_hook(_, __, output):
-            self._features = output
-
-        def bwd_hook(_, grad_in, grad_out):
-            _ = grad_in
-            self._grads = grad_out[0]
-
-        self._hooks.append(self.target_layer.register_forward_hook(fwd_hook))
-        self._hooks.append(self.target_layer.register_full_backward_hook(bwd_hook))
+        self._cam = PytorchGradCAM(model=self.model, target_layers=[self.target_layer])
 
     def close(self) -> None:
-        for h in self._hooks:
-            try:
-                h.remove()
-            except Exception:
-                pass
-        self._hooks.clear()
+        try:
+            if hasattr(self._cam, "activations_and_grads"):
+                self._cam.activations_and_grads.release()
+        except Exception:
+            pass
 
     def __call__(self, x: torch.Tensor, class_idx: Optional[int] = None) -> np.ndarray:
-        self.model.zero_grad(set_to_none=True)
-        x = x.requires_grad_(True)
-
-        y = self.model(x)
-        if isinstance(y, (tuple, list)) and y:
-            y = y[0]
-
-        if y.ndim == 2 and y.shape[1] == 2:
-            idx = 1 if class_idx is None else int(class_idx)
-            score = y[:, idx].sum()
-        else:
-            score = y.reshape(-1).sum()
-
-        score.backward(retain_graph=False)
-
-        feats = self._features
-        grads = self._grads
-        if feats is None or grads is None:
-            raise RuntimeError("GradCAM hook에서 feature/gradient를 수집하지 못했습니다.")
-
-        weights = grads.mean(dim=(2, 3), keepdim=True)
-        cam = (weights * feats).sum(dim=1, keepdim=True)
-        cam = F.relu(cam)
-
-        cam_np = cam.detach().cpu().numpy()[0, 0]
+        idx = 1 if class_idx is None else int(class_idx)
+        targets = [ClassifierOutputTarget(idx)]
+        cam_out = self._cam(input_tensor=x, targets=targets)
+        cam_np = np.asarray(cam_out[0] if isinstance(cam_out, (list, tuple)) else cam_out, dtype=np.float32)
+        if cam_np.ndim == 3:
+            cam_np = cam_np[0]
         cam_np = cv2.resize(cam_np, (x.shape[-1], x.shape[-2]), interpolation=cv2.INTER_LINEAR)
         cam_np = cam_np - cam_np.min()
         cam_np = cam_np / (cam_np.max() + 1e-6)
@@ -1250,6 +1226,7 @@ def build_evidence_for_face(
     p_final = fuse_probs(p_rgb, p_freq, w=fusion_w)
 
     heat = cam(x_rgb, class_idx=1)
+    gradcam_overlay_rgb = overlay_cam(face_rgb_uint8, heat, alpha=0.45)
 
     h, w, _ = face_rgb_uint8.shape
     masks = build_region_masks_from_5pt(landmarks, h, w)
@@ -1289,6 +1266,7 @@ def build_evidence_for_face(
     band_deltas: Dict[str, float] = {}
     dominant_band = "unknown"
     gray = to_gray(face_rgb_uint8)
+    wavelet_rgb = wavelet_signature_rgb(gray, (w, h))
     energy_ratio_map = wavelet_band_energy_ratio(gray)
     dominant_energy_band = (
         max(energy_ratio_map.keys(), key=lambda k: energy_ratio_map[k]) if energy_ratio_map else "unknown"
@@ -1318,6 +1296,8 @@ def build_evidence_for_face(
 
     assets = {
         "face_crop_url": to_png_data_url(face_rgb_uint8),
+        "gradcam_overlay_url": to_png_data_url(gradcam_overlay_rgb),
+        "wavelet_signature_url": to_png_data_url(wavelet_rgb),
     }
 
     evidence = {

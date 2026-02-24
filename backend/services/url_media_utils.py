@@ -7,6 +7,7 @@ URL 기반 미디어(이미지/영상) 다운로드 서비스.
 
 import glob
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict
@@ -27,6 +28,8 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 
 URL_MEDIA_MAX_MB = _env_int("URL_MEDIA_MAX_MB", 120, 1)
 URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
+YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
+YTDLP_JS_RUNTIMES = [item.strip() for item in (os.getenv("YTDLP_JS_RUNTIMES", "node") or "").split(",") if item.strip()]
 
 
 @dataclass
@@ -120,6 +123,57 @@ def _load_yt_dlp_cls():
     return YoutubeDL
 
 
+def _apply_cookiefile_option(opts: Dict[str, Any], tmp_dir: str) -> None:
+    if not YTDLP_COOKIEFILE:
+        return
+
+    if not os.path.isfile(YTDLP_COOKIEFILE):
+        raise ValueError(f"YTDLP_COOKIEFILE 파일을 찾을 수 없습니다: {YTDLP_COOKIEFILE}")
+
+    # Docker secret는 read-only라 yt-dlp가 cookie jar 저장 시 실패할 수 있어 요청별 임시본을 사용한다.
+    req_cookie_path = os.path.join(tmp_dir, "yt_cookies.txt")
+    try:
+        shutil.copyfile(YTDLP_COOKIEFILE, req_cookie_path)
+    except Exception as exc:
+        raise ValueError(f"YTDLP_COOKIEFILE 복사 실패: {exc}") from exc
+    opts["cookiefile"] = req_cookie_path
+
+
+def _apply_js_runtime_option(opts: Dict[str, Any]) -> None:
+    if YTDLP_JS_RUNTIMES:
+        opts["js_runtimes"] = YTDLP_JS_RUNTIMES
+
+
+def _is_login_or_rate_limit_error(message: str) -> bool:
+    low = str(message or "").lower()
+    keywords = [
+        "login required",
+        "cookies",
+        "rate-limit reached",
+        "requested content is not available",
+        "sign in to confirm",
+    ]
+    return any(keyword in low for keyword in keywords)
+
+
+def _is_format_unavailable_error(message: str) -> bool:
+    low = str(message or "").lower()
+    keywords = [
+        "requested format is not available",
+        "requested format not available",
+        "no video formats found",
+        "no formats found",
+    ]
+    return any(keyword in low for keyword in keywords)
+
+
+def _login_or_rate_limit_detail() -> str:
+    return (
+        "URL 접근이 제한되었습니다(로그인 또는 레이트리밋). "
+        "서버에 쿠키 파일을 마운트하고 YTDLP_COOKIEFILE 환경변수를 설정해 주세요."
+    )
+
+
 def download_media_from_url(source_url: str) -> DownloadedMedia:
     validated_url = _validate_source_url(source_url)
     max_bytes = URL_MEDIA_MAX_MB * 1024 * 1024
@@ -139,12 +193,17 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
             "overwrites": True,
             "skip_download": False,
         }
+        _apply_cookiefile_option(base_opts, tmp_dir)
+        _apply_js_runtime_option(base_opts)
 
         # YouTube/Instagram 등에서 가변 포맷 구성을 고려해 format selector를 순차 fallback한다.
         # 추론에는 오디오가 필수 아님(프레임 기반)이라 video-only를 우선 시도한다.
         format_candidates = [
+            "bv*+ba/best",
+            "bestvideo*+bestaudio/bestvideo*/best",
             "bestvideo*/bestvideo/best",
             "best/bestvideo*/bestvideo",
+            None,  # yt-dlp 기본 format 선택
         ]
 
         info = None
@@ -152,18 +211,25 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
         for fmt in format_candidates:
             try:
                 opts = dict(base_opts)
-                opts["format"] = fmt
+                if fmt:
+                    opts["format"] = fmt
+                else:
+                    opts.pop("format", None)
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(validated_url, download=True)
                 break
             except Exception as exc:
                 last_error = exc
                 msg = str(exc)
-                if "Requested format is not available" in msg:
+                if _is_format_unavailable_error(msg):
                     continue
+                if _is_login_or_rate_limit_error(msg):
+                    raise ValueError(_login_or_rate_limit_detail()) from exc
                 raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {exc}") from exc
 
         if info is None:
+            if _is_login_or_rate_limit_error(str(last_error or "")):
+                raise ValueError(_login_or_rate_limit_detail())
             raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {last_error}")
 
         entry = _pick_primary_entry(info)

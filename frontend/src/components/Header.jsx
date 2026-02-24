@@ -38,11 +38,17 @@ export default function Header() {
   };
 
   const handleSolutionClick = () => {
+    const scrollToTopNow = () => {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    };
+
     if (location.pathname === "/analyze") {
-      window.location.reload();
-    } else {
-      nav("/analyze");
+      scrollToTopNow();
+      return;
     }
+
+    nav("/analyze");
+    setTimeout(scrollToTopNow, 0);
   };
 
   return (

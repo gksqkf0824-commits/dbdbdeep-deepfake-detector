@@ -42,6 +42,7 @@ const EMPTY_RESULT = {
   caveats: [],
   evidenceBasis: "",
   representativeSampleIndex: null,
+  inputMediaType: "",
 };
 
 const INTERPRETATION_GUIDE_FALLBACK = [
@@ -328,6 +329,7 @@ function parseLegacyResult(response) {
         : timelineExplain.frequencyFindings,
     spatialVisualUrl,
     sourcePreview,
+    inputMediaType: sourcePreview?.kind || "video",
     interpretationGuide:
       representativeInterpretationGuide.length > 0
         ? representativeInterpretationGuide
@@ -393,6 +395,7 @@ function parseEvidenceResult(response) {
     bandEnergy: Array.isArray(freqEvidence?.band_energy) ? freqEvidence.band_energy : [],
     spatialVisualUrl,
     sourcePreview,
+    inputMediaType: sourcePreview?.kind || "image",
     interpretationGuide: Array.isArray(explanation?.interpretation_guide)
       ? explanation.interpretation_guide
       : INTERPRETATION_GUIDE_FALLBACK,
@@ -499,6 +502,10 @@ export default function Analyze() {
   const progressTimerRef = useRef(null);
 
   useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, []);
+
+  useEffect(() => {
     return () => {
       if (progressTimerRef.current) {
         clearInterval(progressTimerRef.current);
@@ -560,8 +567,14 @@ export default function Analyze() {
   };
 
   const onChangeMode = (mode) => {
+    if (previewUrl && String(previewUrl).startsWith("blob:")) URL.revokeObjectURL(previewUrl);
     setInputMode(mode);
+    setFile(null);
+    setFileType("");
+    setPreviewUrl(null);
+    setImageUrl("");
     setUrlPreview(null);
+    setVideoDuration(0);
     setResult(null);
     setError("");
     stopProgress(0);
@@ -616,6 +629,10 @@ export default function Analyze() {
       }
       const parsed = parseAnalyzeResponse(response, requestType);
       if (inputMode === "url") {
+        setFile(null);
+        setPreviewUrl(null);
+        setVideoDuration(0);
+        setFileType(requestType);
         const fallbackPreview =
           requestType === "video"
             ? { kind: "video", url: imageUrl.trim(), pageUrl: imageUrl.trim() }
@@ -682,7 +699,7 @@ export default function Analyze() {
               progress={progress}
               result={result}
               error={error}
-              fileType={fileType}
+              fileType={fileType || result?.inputMediaType || ""}
               faceImageUrl={result?.preprocessed?.cropImage || null}
             />
           </div>

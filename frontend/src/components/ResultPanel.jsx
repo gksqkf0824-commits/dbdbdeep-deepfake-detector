@@ -155,10 +155,11 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
 
   const badge = (() => {
     if (!result) return { text: "대기", color: "text-slate-400", bg: "bg-slate-100" };
-    if (isUndetermined) return { text: "판별 불가", color: "text-slate-500", bg: "bg-slate-100" };
-    const isFake = trust !== null ? trust < 50 : null;
-    if (isFake === true) return { text: "주의 요망", color: "text-red-600", bg: "bg-red-50" };
-    if (isFake === false) return { text: "매우 안전", color: "text-emerald-600", bg: "bg-emerald-50" };
+    if (isUndetermined) return { text: "추론 실패", color: "text-red-600", bg: "bg-red-50" };
+    const pReal = trust !== null ? trust / 100 : null;
+    if (pReal !== null && pReal < 0.335) return { text: "가짜", color: "text-red-600", bg: "bg-red-50" };
+    if (pReal !== null && pReal < 0.52) return { text: "주의", color: "text-amber-600", bg: "bg-amber-50" };
+    if (pReal !== null) return { text: "진짜", color: "text-emerald-600", bg: "bg-emerald-50" };
     return { text: "판독 완료", color: "text-blue-600", bg: "bg-blue-50" };
   })();
 
@@ -189,10 +190,10 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
           <div>
             <div className="font-semibold text-slate-900 mb-1 text-lg">AI 판별 결과</div>
             <div className={`text-5xl sm:text-6xl font-bold tracking-tight ${isUndetermined ? "text-red-600" : "text-blue-600"}`}>
-              {isUndetermined ? "판별 불가" : trust !== null ? `${trust.toFixed(2)}%` : "--%"}
+              {isUndetermined ? "추론 실패" : trust !== null ? `${trust.toFixed(2)}%` : "--%"}
             </div>
             <div className="text-base text-slate-500 mt-2 font-medium">
-              {result ? (isUndetermined ? "얼굴 미감지" : "분석 완료") : "분석 결과 대기"}
+              {result ? (isUndetermined ? "얼굴 미탐지" : "분석 완료") : "분석 결과 대기"}
             </div>
           </div>
         </div>
@@ -216,7 +217,11 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
 
       {/* Analysis Charts */}
       <div className="mt-8 flex-grow flex flex-col justify-end">
-        {isVideo ? (
+        {result && isUndetermined ? (
+          <div className="border border-red-200 rounded-lg p-6 bg-red-50/40 shadow-sm min-h-[280px] flex items-center justify-center text-center">
+            <div className="text-red-600 font-semibold text-lg">얼굴 미탐지로 인해 추론이 실패했습니다</div>
+          </div>
+        ) : isVideo ? (
           <div className="border border-gray-200 rounded-lg p-6 bg-white shadow-sm">
             <div className="font-semibold text-slate-800 mb-5 text-base">타임라인 정밀 분석</div>
             <div className="h-[280px] w-full">

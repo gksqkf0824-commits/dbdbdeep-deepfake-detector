@@ -33,11 +33,13 @@ app.add_middleware(
 
 
 @app.get("/test")
+@app.get("/api/test")
 async def test():
     return {"message": "서버가 정상적으로 작동 중입니다."}
 
 
 @app.post("/clear-cache")
+@app.post("/api/clear-cache")
 async def clear_cache():
     try:
         return clear_cache_entries()
@@ -45,6 +47,7 @@ async def clear_cache():
         raise HTTPException(status_code=500, detail=f"Cache clear error: {e}")
 
 
+@app.post("/analyze")
 @app.post("/api/analyze")
 async def analyze_with_evidence(
     file: UploadFile = File(...),
@@ -61,15 +64,15 @@ async def analyze_with_evidence(
     )
 
 
-@app.post("/api/analyze-video")
 @app.post("/analyze-video")
+@app.post("/api/analyze-video")
 async def analyze_video(file: UploadFile = File(...)):
     content = await file.read()
     return analyze_video_bytes(content=content, filename=file.filename or "upload.mp4")
 
 
-@app.post("/api/analyze-url")
 @app.post("/analyze-url")
+@app.post("/api/analyze-url")
 async def analyze_url(
     source_url: str = Form(""),
     image_url: str = Form(""),
@@ -90,5 +93,6 @@ async def analyze_url(
 
 
 @app.get("/get-result/{token}")
+@app.get("/api/get-result/{token}")
 async def get_analysis_result(token: str):
     return get_result_by_token(token)

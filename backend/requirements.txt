@@ -22,3 +22,4 @@ onnx==1.15.*
 onnxruntime-gpu==1.17.*
 
 yt-dlp
+instaloader

@@ -341,7 +341,7 @@ class DeepfakeDetectorEnsemble:
                 s_p = 50.0
 
         # 6) 앙상블 (Pixel 0.7 : Freq 0.3)
-        avg_conf = (s_p * 0.21) + (s_f * 0.79)
+        avg_conf = (s_p * 0.37) + (s_f * 0.63)
 
         preprocessed_payload = None
         if include_preprocess:

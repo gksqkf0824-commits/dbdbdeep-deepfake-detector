@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from services.analysis_service import (
     analyze_evidence_bytes,
-    analyze_image_legacy,
     analyze_url_source,
     analyze_video_bytes,
     clear_cache_entries,
@@ -47,8 +46,6 @@ async def clear_cache():
 
 
 @app.post("/api/analyze")
-@app.post("/api/analyze-evidence")
-@app.post("/analyze-evidence")
 async def analyze_with_evidence(
     file: UploadFile = File(...),
     explain: bool = Form(True),
@@ -62,12 +59,6 @@ async def analyze_with_evidence(
         evidence_level=evidence_level,
         fusion_w=fusion_w,
     )
-
-
-@app.post("/analyze")
-async def analyze_image(file: UploadFile = File(...)):
-    image_bytes = await file.read()
-    return analyze_image_legacy(image_bytes)
 
 
 @app.post("/api/analyze-video")

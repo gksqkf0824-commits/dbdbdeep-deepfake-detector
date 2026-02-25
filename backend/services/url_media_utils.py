@@ -6,6 +6,7 @@ URL 기반 미디어(이미지/영상) 다운로드 서비스.
 """
 
 import glob
+import json
 import os
 import shutil
 import tempfile
@@ -33,7 +34,60 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 URL_MEDIA_MAX_MB = _env_int("URL_MEDIA_MAX_MB", 120, 1)
 URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
-YTDLP_JS_RUNTIMES = [item.strip() for item in (os.getenv("YTDLP_JS_RUNTIMES", "node") or "").split(",") if item.strip()]
+
+
+def _parse_js_runtimes(raw: str) -> Dict[str, Dict[str, str]]:
+    """
+    yt-dlp(신버전)는 js_runtimes를 {runtime: {config}} 형태(dict)로 기대한다.
+
+    지원 입력 형식:
+    - "node"
+    - "node,deno"
+    - "node:/usr/bin/node,deno:/usr/bin/deno"
+    - '{"node":{"path":"/usr/bin/node"}}'
+    """
+    s = (raw or "").strip()
+    if not s:
+        return {}
+
+    if s.startswith("{"):
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, dict):
+                out: Dict[str, Dict[str, str]] = {}
+                for runtime, cfg in parsed.items():
+                    name = str(runtime).strip()
+                    if not name:
+                        continue
+                    if isinstance(cfg, dict):
+                        path = str(cfg.get("path", "")).strip()
+                        out[name] = {"path": path} if path else {}
+                    else:
+                        out[name] = {}
+                if out:
+                    return out
+        except Exception:
+            # JSON 파싱 실패 시 아래 CSV 파서로 fallback
+            pass
+
+    out: Dict[str, Dict[str, str]] = {}
+    for token in s.split(","):
+        item = token.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, path = item.split(":", 1)
+            name = name.strip()
+            path = path.strip()
+            if not name:
+                continue
+            out[name] = {"path": path} if path else {}
+        else:
+            out[item] = {}
+    return out
+
+
+YTDLP_JS_RUNTIMES = _parse_js_runtimes(os.getenv("YTDLP_JS_RUNTIMES", "node") or "")
 
 
 @dataclass
@@ -216,7 +270,7 @@ def _apply_cookiefile_option(opts: Dict[str, Any], tmp_dir: str) -> None:
 
 
 def _apply_js_runtime_option(opts: Dict[str, Any]) -> None:
-    if YTDLP_JS_RUNTIMES:
+    if YTDLP_JS_RUNTIMES and isinstance(YTDLP_JS_RUNTIMES, dict):
         opts["js_runtimes"] = YTDLP_JS_RUNTIMES
 
 

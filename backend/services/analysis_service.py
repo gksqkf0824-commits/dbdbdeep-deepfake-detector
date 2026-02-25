@@ -125,6 +125,20 @@ def _safe_score_agg(values):
     return float(max(values)) if values else 0.0
 
 
+def _fake_prob_to_real_percent(p_fake: float) -> float:
+    p = float(p_fake)
+    if p < 0.0:
+        p = 0.0
+    if p > 1.0:
+        p = 1.0
+    return float((1.0 - p) * 100.0)
+
+
+def _model_weighted_confidence(pixel_real: float, freq_real: float) -> float:
+    # model.py의 앙상블 방식과 동일하게 계산한다.
+    return float((float(pixel_real) * 0.21) + (float(freq_real) * 0.79))
+
+
 def _build_source_preview(source_url: str, media_type: str) -> dict:
     kind = "video" if str(media_type).lower() == "video" else "image"
     return {
@@ -244,35 +258,17 @@ def analyze_evidence_bytes(
         "ai_comment": ai_comment,
         "ai_comment_source": ai_comment_source,
     }
+
+    # 프론트 종합점수는 model.py 점수 체계(real-confidence)와 동일 값으로 전달한다.
+    pixel_real = _fake_prob_to_real_percent(result["score"]["p_rgb"])
+    freq_real = _fake_prob_to_real_percent(result["score"]["p_freq"])
+    final_real = _model_weighted_confidence(pixel_real, freq_real)
+    result["confidence"] = round(float(final_real), 2)
+    result["pixel_score"] = round(float(pixel_real), 2)
+    result["freq_score"] = round(float(freq_real), 2)
+    result["is_fake"] = bool(result["confidence"] < 50.0)
+
     return result
-
-
-# =========================
-# Image legacy inference
-# =========================
-
-def analyze_image_legacy(image_bytes: bytes) -> dict:
-    try:
-        score, pixel_score, freq_score, preprocessed = detector.predict(
-            image_bytes,
-            include_preprocess=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Model Inference Error: {exc}") from exc
-
-    analysis_result = build_analysis_result(
-        score,
-        pixel_score,
-        freq_score,
-        real_mean=REAL_MEAN,
-        real_std=REAL_STD,
-    )
-    if preprocessed is not None:
-        analysis_result["preprocessed"] = preprocessed
-
-    stored_result = dict(analysis_result)
-    stored_result.pop("preprocessed", None)
-    return store_result_and_make_response(analysis_result, stored_result=stored_result)
 
 
 # =========================

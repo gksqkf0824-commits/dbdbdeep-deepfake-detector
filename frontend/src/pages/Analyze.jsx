@@ -354,8 +354,31 @@ function parseEvidenceResult(response) {
   const spatialVisualUrl = toRenderableImageUrl(firstFace?.assets?.gradcam_overlay_url || "");
 
   const hasDetectedFace = faces.length > 0;
-  const confidence = hasDetectedFace ? toRealConfidence(score.p_final) : null;
-  const isFake = Number.isFinite(confidence) ? confidence < 50 : null;
+  const backendConfidence = Number(response?.confidence);
+  const backendPixelScore = Number(response?.pixel_score);
+  const backendFreqScore = Number(response?.freq_score);
+
+  const confidence = hasDetectedFace
+    ? Number.isFinite(backendConfidence)
+      ? backendConfidence
+      : toRealConfidence(score.p_final)
+    : null;
+  const pixelScore = hasDetectedFace
+    ? Number.isFinite(backendPixelScore)
+      ? backendPixelScore
+      : toRealConfidence(score.p_rgb)
+    : null;
+  const freqScore = hasDetectedFace
+    ? Number.isFinite(backendFreqScore)
+      ? backendFreqScore
+      : toRealConfidence(score.p_freq)
+    : null;
+  const isFake =
+    typeof response?.is_fake === "boolean"
+      ? response.is_fake
+      : Number.isFinite(confidence)
+        ? confidence < 50
+        : null;
 
   const cropImage = toRenderableImageUrl(firstFace?.assets?.face_crop_url || "");
   const preprocessed = cropImage ? { cropImage } : null;
@@ -366,8 +389,8 @@ function parseEvidenceResult(response) {
     requestId: response?.request_id || "",
     isUndetermined: !hasDetectedFace,
     confidence,
-    pixelScore: hasDetectedFace ? toRealConfidence(score.p_rgb) : null,
-    freqScore: hasDetectedFace ? toRealConfidence(score.p_freq) : null,
+    pixelScore,
+    freqScore,
     isFake,
     pValue: null,
     reliability: "",
@@ -380,8 +403,8 @@ function parseEvidenceResult(response) {
       buildCommonComment({
         isFake,
         confidence,
-        pixelScore: hasDetectedFace ? toRealConfidence(score.p_rgb) : null,
-        freqScore: hasDetectedFace ? toRealConfidence(score.p_freq) : null,
+        pixelScore,
+        freqScore,
       }),
     topRegions: Array.isArray(spatialEvidence?.regions_topk) ? spatialEvidence.regions_topk : [],
     dominantBand: freqEvidence?.dominant_band || "",
@@ -422,7 +445,7 @@ async function analyzeWithFastAPI(file, fileType) {
     formData.append("fusion_w", "0.5");
   }
 
-  const endpoint = fileType === "video" ? "/api/analyze-video" : "/api/analyze-evidence";
+  const endpoint = fileType === "video" ? "/api/analyze-video" : "/api/analyze";
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: "POST",
     body: formData,

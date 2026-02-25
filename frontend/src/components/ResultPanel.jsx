@@ -216,11 +216,13 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
       </div>
 
 {/* Analysis Charts */}
-<div className="mt-16">
-  {result && isUndetermined ? (
-    <div className="border border-red-200 rounded-lg px-6 py-14 bg-red-50/40 shadow-sm flex items-center justify-center text-center">
-      <div className="text-red-600 font-semibold text-lg">
-        얼굴 미탐지로 인해 추론이 실패했습니다
+<div className="mt-8 flex flex-col flex-1">
+  {result && isUndetermined ? (    
+    <div className="flex flex-1 items-center">
+      <div className="w-full border border-red-200 rounded-lg px-6 py-14 bg-red-50/40 shadow-sm flex items-center justify-center text-center">
+        <div className="text-red-600 font-semibold text-lg">
+          얼굴 미탐지로 인해 추론이 실패했습니다
+        </div>
       </div>
     </div>
         ) : isVideo ? (

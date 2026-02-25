@@ -3,7 +3,7 @@ URL 기반 미디어(이미지/영상) 다운로드 서비스.
 
 지원 분기:
 1) YouTube URL 동영상/이미지 추론(yt-dlp)
-2) Instagram URL 동영상/이미지 추론(Instaloader + sessionid)
+2) Instagram URL 동영상/이미지 추론(Instaloader + yt-dlp fallback)
 3) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
 """
 
@@ -49,9 +49,20 @@ def _env_float(name: str, default: float, minimum: float) -> float:
     return max(value, minimum)
 
 
+def _env_csv(name: str, default: str) -> List[str]:
+    raw = (os.getenv(name, default) or "").strip()
+    tokens: List[str] = []
+    for item in raw.split(","):
+        token = item.strip()
+        if token:
+            tokens.append(token)
+    return tokens
+
+
 URL_MEDIA_MAX_MB = _env_int("URL_MEDIA_MAX_MB", 120, 1)
 URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
+YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web,tv_embedded")
 
 INSTAGRAM_SESSION_ID = (os.getenv("INSTAGRAM_SESSION_ID") or "").strip()
 INSTAGRAM_USER_AGENT = (os.getenv("INSTAGRAM_USER_AGENT") or _HTTP_USER_AGENT).strip() or _HTTP_USER_AGENT
@@ -332,6 +343,47 @@ def _apply_js_runtime_option(opts: Dict[str, Any]) -> None:
         opts["js_runtimes"] = YTDLP_JS_RUNTIMES
 
 
+def _apply_youtube_extractor_option(opts: Dict[str, Any]) -> None:
+    if not YTDLP_YOUTUBE_CLIENTS:
+        return
+
+    extractor_args = dict(opts.get("extractor_args") or {})
+    yt_args = dict(extractor_args.get("youtube") or {})
+    yt_args["player_client"] = list(YTDLP_YOUTUBE_CLIENTS)
+    extractor_args["youtube"] = yt_args
+    opts["extractor_args"] = extractor_args
+
+
+def _build_format_candidates(source_group: str, source_url: str) -> List[Optional[str]]:
+    low = source_url.lower()
+    if source_group == "youtube":
+        return [
+            "best[ext=mp4][vcodec!=none]/best[ext=webm][vcodec!=none]/best[vcodec!=none]/best",
+            "bestvideo[ext=mp4]/bestvideo/best",
+            None,
+        ]
+
+    if source_group == "instagram":
+        if "/reel/" in low or "/reels/" in low:
+            return [
+                "best[ext=mp4][vcodec!=none]/best[ext=webm][vcodec!=none]/best[vcodec!=none]/best",
+                "best",
+                None,
+            ]
+        return [
+            "best",
+            "best[ext=jpg]/best[ext=jpeg]/best[ext=png]/best[ext=webp]",
+            "best[ext=mp4]/best[ext=webm]/best",
+            None,
+        ]
+
+    return [
+        "best",
+        "best[ext=mp4]/best[ext=webm]/best",
+        None,
+    ]
+
+
 def _is_login_or_rate_limit_error(message: str) -> bool:
     low = str(message or "").lower()
     keywords = [
@@ -343,6 +395,11 @@ def _is_login_or_rate_limit_error(message: str) -> bool:
         "provided youtube account cookies are no longer valid",
         "confirm you’re not a bot",
         "confirm you're not a bot",
+        "please sign in",
+        "not a bot",
+        "private account",
+        "private video",
+        "login to view",
     ]
     return any(keyword in low for keyword in keywords)
 
@@ -367,6 +424,7 @@ def _login_or_rate_limit_detail(source_url: str = "") -> str:
     if _is_youtube_url(source_url):
         return (
             "유튜브 접근이 제한되었습니다(봇 확인/로그인 필요). "
+            "공개 접근 프로필로 재시도했지만 실패했습니다. "
             "유효한 YouTube 쿠키를 재발급해 YTDLP_COOKIEFILE로 설정해 주세요."
         )
     if _is_instagram_url(source_url):
@@ -455,28 +513,15 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
             "overwrites": True,
             "skip_download": False,
             "http_headers": {"User-Agent": _HTTP_USER_AGENT},
+            "retries": 2,
+            "fragment_retries": 2,
         }
         _apply_cookiefile_option(base_opts, tmp_dir)
         _apply_js_runtime_option(base_opts)
-
         if source_group == "youtube":
-            format_candidates: List[Optional[str]] = [
-                "bestvideo*/bestvideo",
-                "best[ext=mp4]/best[ext=webm]/best",
-                None,
-            ]
-        elif source_group == "instagram":
-            format_candidates = [
-                "best[ext=mp4]/best[ext=webm]/best",
-                "bestvideo*/bestvideo",
-                None,
-            ]
-        else:
-            format_candidates = [
-                "best",
-                "bestvideo*/bestvideo",
-                None,
-            ]
+            _apply_youtube_extractor_option(base_opts)
+
+        format_candidates = _build_format_candidates(source_group=source_group, source_url=source_url)
 
         info = None
         last_error: Optional[Exception] = None
@@ -564,9 +609,6 @@ def _extract_instagram_shortcode(source_url: str) -> str:
 
 
 def _build_instagram_sessions():
-    if not INSTAGRAM_SESSION_ID:
-        raise ValueError("Instagram URL 추론을 위해 INSTAGRAM_SESSION_ID 환경변수가 필요합니다.")
-
     Instaloader, Post, ConnectionException = _load_instaloader_symbols()
 
     loader = Instaloader(
@@ -577,7 +619,8 @@ def _build_instagram_sessions():
         save_metadata=False,
         user_agent=INSTAGRAM_USER_AGENT,
     )
-    loader.context._session.cookies.set("sessionid", INSTAGRAM_SESSION_ID, domain=".instagram.com")
+    if INSTAGRAM_SESSION_ID:
+        loader.context._session.cookies.set("sessionid", INSTAGRAM_SESSION_ID, domain=".instagram.com")
 
     try:
         import requests
@@ -585,7 +628,8 @@ def _build_instagram_sessions():
         raise RuntimeError("Instagram 미디어 다운로드를 위해 requests 라이브러리가 필요합니다.") from exc
 
     req_session = requests.Session()
-    req_session.cookies.set("sessionid", INSTAGRAM_SESSION_ID, domain=".instagram.com")
+    if INSTAGRAM_SESSION_ID:
+        req_session.cookies.set("sessionid", INSTAGRAM_SESSION_ID, domain=".instagram.com")
     req_session.headers.update({"User-Agent": INSTAGRAM_USER_AGENT})
 
     return loader, req_session, Post, ConnectionException
@@ -701,7 +745,7 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
     """
     URL 미디어 다운로드 진입점.
     - YouTube URL: yt-dlp 전용 경로
-    - Instagram URL: Instaloader(sessionid) 전용 경로
+    - Instagram URL: Instaloader 우선 + yt-dlp fallback 경로
     - 기타 URL: direct-http 우선, 실패 시 yt-dlp generic 경로
     """
     validated_url = _validate_source_url(source_url)
@@ -711,16 +755,19 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
         try:
             return _download_instagram_media(validated_url, max_bytes=max_bytes)
         except Exception as insta_exc:
-            # 세션 방식 실패 시, cookiefile이 있으면 yt-dlp 경로를 1회 fallback 한다.
-            if YTDLP_COOKIEFILE:
+            ytdlp_errors: List[str] = []
+
+            for source_group in ("instagram", "generic"):
                 try:
-                    return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="instagram")
+                    return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group=source_group)
                 except Exception as ytdlp_exc:
-                    raise ValueError(
-                        "Instagram URL 처리 실패(Instaloader + yt-dlp fallback). "
-                        f"instaloader: {insta_exc}; yt-dlp: {ytdlp_exc}"
-                    ) from ytdlp_exc
-            raise
+                    ytdlp_errors.append(f"{source_group}: {ytdlp_exc}")
+
+            joined_ytdlp_errors = " | ".join(ytdlp_errors) if ytdlp_errors else "알 수 없는 오류"
+            raise ValueError(
+                "Instagram URL 처리 실패(Instaloader + yt-dlp fallback). "
+                f"instaloader: {insta_exc}; yt-dlp: {joined_ytdlp_errors}"
+            ) from insta_exc
 
     if _is_youtube_url(validated_url):
         return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")

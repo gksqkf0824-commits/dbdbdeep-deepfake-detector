@@ -1,6 +1,7 @@
 """Explanation and LLM text generation utilities."""
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -19,6 +20,73 @@ def _env_float(name: str, default: float) -> float:
 
 def _normalize_text(text: str) -> str:
     return " ".join(str(text or "").split())
+
+
+_NUMERIC_MENTION_RE = re.compile(r"[0-9]+(?:[.,][0-9]+)?\s*(?:%|％|퍼센트)?")
+
+
+def _strip_numeric_mentions(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    cleaned = _NUMERIC_MENTION_RE.sub("", text)
+    cleaned = cleaned.replace("%", "").replace("％", "")
+    cleaned = _normalize_text(cleaned)
+    cleaned = cleaned.strip(" .,!?:;")
+    return cleaned
+
+
+def _qualitative_confidence(fake_prob: float) -> str:
+    margin = abs(float(fake_prob) - 0.5)
+    if margin >= 0.30:
+        return "판단 신호가 비교적 또렷한 편"
+    if margin >= 0.15:
+        return "판단 신호가 어느 정도 보이는 편"
+    return "판단 신호가 팽팽해 추가 확인이 필요한 편"
+
+
+def _qualitative_image_verdict(fake_prob: float) -> str:
+    p = float(fake_prob)
+    margin = abs(p - 0.5)
+    if p >= 0.5:
+        if margin >= 0.25:
+            return "조작 가능성 쪽으로 꽤 기울어 보입니다."
+        return "조작 가능성 쪽으로 살짝 기울어 보입니다."
+    if margin >= 0.25:
+        return "원본 가능성 쪽으로 꽤 기울어 보입니다."
+    return "원본 가능성 쪽으로 살짝 기울어 보입니다."
+
+
+def _qualitative_band_energy(low_pct: float, mid_pct: float, high_pct: float) -> str:
+    values = {"저주파": float(low_pct), "중주파": float(mid_pct), "고주파": float(high_pct)}
+    dominant = max(values.keys(), key=lambda k: values[k])
+    if dominant == "저주파":
+        return "큰 윤곽 중심 신호가 비교적 도드라집니다."
+    if dominant == "중주파":
+        return "경계/텍스처 중심 신호가 비교적 도드라집니다."
+    return "미세 경계 중심 신호가 비교적 도드라집니다."
+
+
+def _qualitative_video_flow(stats_obj: Optional[Dict[str, float]], label: str) -> str:
+    if not stats_obj:
+        return f"{label} 흐름은 데이터가 부족합니다."
+
+    trend = str(stats_obj.get("trend") or "유지")
+    swing = float(stats_obj.get("swing") or 0.0)
+    if swing >= 20.0:
+        variance = "변화 폭이 큰 편"
+    elif swing >= 8.0:
+        variance = "변화 폭이 중간 정도"
+    else:
+        variance = "변화 폭이 크지 않은 편"
+
+    if trend == "상승":
+        trend_text = "뒤로 갈수록 올라가는 흐름"
+    elif trend == "하강":
+        trend_text = "뒤로 갈수록 내려가는 흐름"
+    else:
+        trend_text = "처음부터 끝까지 비교적 유지되는 흐름"
+
+    return f"{label}은 {trend_text}이고 {variance}입니다."
 
 
 def _extract_responses_text(payload: Dict[str, Any]) -> str:
@@ -162,30 +230,40 @@ def generate_image_ai_comment(
     energy_mid_pct: float,
     energy_high_pct: float,
 ) -> Optional[str]:
+    verdict = _qualitative_image_verdict(fake_prob)
+    confidence_hint = _qualitative_confidence(fake_prob)
+    band_energy_hint = _qualitative_band_energy(energy_low_pct, energy_mid_pct, energy_high_pct)
+
     system_prompt = (
         "너는 비전문가 사용자에게 딥페이크 판독 결과를 설명하는 한국어 안내자다. "
         "중학생도 이해할 수 있는 쉬운 단어를 사용하고, 전문용어는 꼭 필요할 때만 짧게 풀이해서 쓴다. "
-        "출력은 1~2문장으로 작성하고, 확정적 단정 표현은 금지한다. "
-        "확률 수치(예: xx%)를 그대로 반복하지 말고 가능성 중심으로 말한다. "
-        "자연스러운 유머/위트를 한 번만 가볍게 넣되, 과하거나 조롱처럼 들리지 않게 한다. "
-        "결론은 불확실성을 전제로 설명한다."
+        "아라비아 숫자(0-9), 퍼센트 기호(%), 소수점 표기를 절대 사용하지 않는다. "
+        "출력은 1~2문장으로 작성하고, 단정 대신 가능성 중심으로 설명한다. "
+        "사용자가 흥미를 느낄 수 있도록 가벼운 위트와 센스를 한 번만 넣되, 과장/조롱은 금지한다. "
+        "문장은 자연스럽게 이어져야 하며 해석 오해가 없도록 간결하게 작성한다."
     )
 
     region_text = ", ".join(top_regions) if top_regions else "얼굴 핵심 부위"
     user_prompt = (
-        f"최종 fake 확률 {fake_prob*100:.1f}%, real 확률 {real_prob*100:.1f}%.\n"
+        f"판정 방향: {verdict}\n"
+        f"판정 강도 힌트: {confidence_hint}\n"
         f"주요 부위: {region_text}\n"
         f"우세 대역: {dominant_band_label}\n"
-        f"밴드 에너지: low {energy_low_pct:.1f}%, mid {energy_mid_pct:.1f}%, high {energy_high_pct:.1f}%\n"
+        f"밴드 에너지 요약: {band_energy_hint}\n"
         "사용자용 AI 코멘트를 작성해줘.\n"
-        "- 누구나 이해할 수 있는 쉬운 한국어\n"
-        "- 판단 근거 1~2개를 짧게 포함\n"
-        "- '확실하다' 같은 단정 대신 '가능성' 표현 사용\n"
-        "- 퍼센트 숫자 반복 금지\n"
-        "- 유머/위트를 한 스푼만 자연스럽게 포함\n"
-        "- 숫자 근거를 그대로 읊지 말고 쉬운 말로 바꿔 설명"
+        "- 일반인이 이해하기 쉽게 설명\n"
+        "- 수치(숫자, 퍼센트) 표기 금지\n"
+        "- 한 스푼의 위트와 센스 포함\n"
+        "- 모든 문장이 자연스럽게 이어지도록 작성\n"
+        "- 판단 근거를 한두 개 짧게 포함\n"
+        "- 숫자 근거를 그대로 읊지 말고 쉬운 말로 바꿔 설명\n"
+        "- '확실하다' 같은 단정 대신 '가능성' 표현 사용"
     )
-    return _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=180)
+    raw = _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=180)
+    if not raw:
+        return None
+    cleaned = _strip_numeric_mentions(raw)
+    return cleaned or None
 
 
 def _series_stats(values: List[float]) -> Optional[Dict[str, float]]:
@@ -222,45 +300,54 @@ def generate_video_ai_comment(
     if final_stats is None:
         return None
 
+    final_flow = _qualitative_video_flow(final_stats, "최종 흐름")
+    pixel_flow = _qualitative_video_flow(pixel_stats, "픽셀 흐름")
+    freq_flow = _qualitative_video_flow(freq_stats, "주파수 흐름")
+    swing = float(final_stats.get("swing") or 0.0)
+    if swing >= 20.0:
+        confidence_hint = "흐름 신호가 비교적 또렷하게 보입니다."
+    elif swing >= 8.0:
+        confidence_hint = "흐름 신호가 어느 정도 보이지만 추가 맥락 확인이 좋습니다."
+    else:
+        confidence_hint = "흐름 신호가 미세해 추가 확인이 특히 중요합니다."
+
     system_prompt = (
         "너는 비전문가 사용자에게 영상 판독 결과를 설명하는 한국어 안내자다. "
         "어려운 기술 용어를 피하고, 시간 흐름(처음/중간/끝)을 중심으로 쉽게 설명한다. "
-        "출력은 1~2문장으로 작성하고, 확정적 단정 표현은 금지한다. "
-        "확률 수치(예: xx%)를 그대로 반복하지 말고 가능성 중심으로 말한다. "
-        "자연스러운 유머/위트를 한 번만 가볍게 넣되, 과하거나 조롱처럼 들리지 않게 한다. "
-        "결론은 불확실성을 전제로 설명한다."
+        "아라비아 숫자(0-9), 퍼센트 기호(%), 소수점 표기를 절대 사용하지 않는다. "
+        "출력은 1~2문장으로 작성하고, 단정 대신 가능성 중심으로 설명한다. "
+        "사용자가 흥미를 느낄 수 있도록 가벼운 위트와 센스를 한 번만 넣되, 과장/조롱은 금지한다. "
+        "문장은 자연스럽게 이어져야 하며 해석 오해가 없도록 간결하게 작성한다."
     )
 
     verdict = (
-        "조작 가능성 쪽으로 기울었습니다."
+        "조작되었을 가능성이 높습니다."
         if is_fake is True
-        else "원본 가능성 쪽으로 기울었습니다."
+        else "조작이 없을 가능성이 높습니다."
         if is_fake is False
         else "추가 검증이 필요합니다."
     )
 
-    def _fmt(stats_obj: Optional[Dict[str, float]], label: str) -> str:
-        if not stats_obj:
-            return f"{label}: 데이터 부족"
-        return (
-            f"{label}: 시작 {stats_obj['start']:.1f}%, 중간 {stats_obj['mid']:.1f}%, "
-            f"종료 {stats_obj['end']:.1f}%, 추세 {stats_obj['trend']}, 변동폭 {stats_obj['swing']:.1f}%"
-        )
-
     user_prompt = (
-        f"{_fmt(final_stats, '최종')}\n"
-        f"{_fmt(pixel_stats, '픽셀')}\n"
-        f"{_fmt(freq_stats, '주파수')}\n"
+        f"{final_flow}\n"
+        f"{pixel_flow}\n"
+        f"{freq_flow}\n"
         f"판정 방향: {verdict}\n"
+        f"판정 강도 힌트: {confidence_hint}\n"
         "사용자에게 보여줄 AI 코멘트를 작성해줘.\n"
-        "- 처음/중간/끝 변화가 어떻게 보였는지 짧게 설명\n"
-        "- 비전문가도 이해 가능한 쉬운 표현\n"
+        "- 일반인이 이해하기 쉽게 설명\n"
+        "- 수치(숫자, 퍼센트) 표기 금지\n"
+        "- 한 스푼의 위트와 센스 포함\n"
+        "- 모든 문장이 자연스럽게 이어지도록 작성\n"
+        "- 처음/중간/끝 변화 흐름을 짧게 요약\n"
         "- 확정 단정 대신 가능성 표현 사용\n"
-        "- 퍼센트 숫자 반복 금지\n"
-        "- 유머/위트를 한 스푼만 자연스럽게 포함\n"
-        "- 숫자 근거를 그대로 읊지 말고 쉬운 말로 바꿔 설명"
+        "- 판단 근거를 한두 개 포함"
     )
-    return _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=180)
+    raw = _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=180)
+    if not raw:
+        return None
+    cleaned = _strip_numeric_mentions(raw)
+    return cleaned or None
 
 
 def explain_from_evidence(
@@ -325,12 +412,12 @@ def explain_from_evidence(
     if is_fake_mode:
         summary = (
             f"{region_hint}에서 모델 반응이 크게 나타났고 {band_hint} 대역에서도 변화가 보여, "
-            "이번 샘플은 조작 가능성이 상대적으로 높아 보입니다."
+            "해당 샘플은 조작 가능성이 상대적으로 높아 보입니다."
         )
     else:
         summary = (
             f"{region_hint}과 {band_hint} 대역 신호가 전반적으로 안정적으로 보여, "
-            "이번 샘플은 원본일 가능성이 상대적으로 높아 보입니다."
+            "해당 샘플은 원본일 가능성이 상대적으로 높아 보입니다."
         )
 
     summary_source = "rule_based"

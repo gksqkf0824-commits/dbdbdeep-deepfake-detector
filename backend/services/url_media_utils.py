@@ -528,9 +528,11 @@ def _build_format_candidates(source_group: str, source_url: str) -> List[Optiona
     low = source_url.lower()
     if source_group == "youtube":
         return [
-            "best[ext=mp4][vcodec!=none]/best[ext=webm][vcodec!=none]/best[vcodec!=none]/best",
-            "bestvideo[ext=mp4]/bestvideo/best",
             None,
+            "best",
+            "best[ext=mp4]/best[ext=webm]/best",
+            "bv*+ba/b",
+            "bestvideo*+bestaudio/bestvideo+bestaudio/best",
         ]
 
     if source_group == "instagram":
@@ -666,8 +668,142 @@ def _detect_media_type(entry: Dict[str, Any], file_path: str) -> str:
     return "video"
 
 
+def _format_sort_key(fmt: Dict[str, Any]) -> Tuple[int, int, int, float]:
+    vcodec = str(fmt.get("vcodec", "")).strip().lower()
+    acodec = str(fmt.get("acodec", "")).strip().lower()
+    progressive = 1 if (vcodec not in {"", "none"} and acodec not in {"", "none"}) else 0
+
+    ext = str(fmt.get("ext", "")).strip().lower()
+    ext_rank = 2 if ext == "mp4" else 1 if ext in {"webm", "m4v", "mov"} else 0
+
+    try:
+        height = int(float(fmt.get("height") or 0))
+    except Exception:
+        height = 0
+    try:
+        tbr = float(fmt.get("tbr") or 0.0)
+    except Exception:
+        tbr = 0.0
+    quality = float(height) + (tbr / 1000.0)
+    return progressive, ext_rank, int(quality), quality
+
+
+def _entry_format_candidates(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+
+    direct_url = str(entry.get("url") or "").strip()
+    direct_ext = str(entry.get("ext") or "").strip().lower()
+    if direct_url:
+        candidates.append(
+            {
+                "url": direct_url,
+                "ext": direct_ext,
+                "format_id": str(entry.get("format_id") or "direct"),
+                "vcodec": str(entry.get("vcodec") or ""),
+                "acodec": str(entry.get("acodec") or ""),
+            }
+        )
+
+    formats = entry.get("formats")
+    if isinstance(formats, list):
+        for item in formats:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            protocol = str(item.get("protocol") or "").lower()
+            if "dash" in protocol or protocol.startswith("m3u8"):
+                continue
+            candidates.append(item)
+
+    if not candidates:
+        return []
+
+    deduped: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in sorted(candidates, key=_format_sort_key, reverse=True):
+        key = str(item.get("url") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _download_by_entry_format_urls(
+    *,
+    source_url: str,
+    entry: Dict[str, Any],
+    max_bytes: int,
+    source_group: str,
+) -> DownloadedMedia:
+    candidates = _entry_format_candidates(entry)
+    if not candidates:
+        raise ValueError("추출한 포맷 후보가 없어 직접 스트림 다운로드를 시도할 수 없습니다.")
+
+    last_error: Optional[Exception] = None
+    for fmt in candidates:
+        media_url = str(fmt.get("url") or "").strip()
+        if not media_url:
+            continue
+
+        headers = {"User-Agent": _HTTP_USER_AGENT}
+        if _is_youtube_url(source_url):
+            headers["Referer"] = "https://www.youtube.com/"
+        elif _is_instagram_url(source_url):
+            headers["Referer"] = "https://www.instagram.com/"
+
+        try:
+            content, content_type = _stream_download_bytes(
+                url=media_url,
+                max_bytes=max_bytes,
+                timeout_sec=URL_MEDIA_TIMEOUT_SEC,
+                session=None,
+                headers=headers,
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
+
+        ext = str(fmt.get("ext") or "").strip().lower() or _content_ext_from_type(content_type)
+        format_id = str(fmt.get("format_id") or "fmt").strip() or "fmt"
+        entry_id = str(entry.get("id") or "url_media").strip() or "url_media"
+        filename = f"{entry_id}_{format_id}.{ext}"
+
+        media_type = (
+            "image"
+            if ext in _IMAGE_EXTS
+            else "video"
+            if ext in _VIDEO_EXTS
+            else _media_type_from_content_type(content_type)
+        )
+
+        extractor = str(entry.get("extractor_key") or entry.get("extractor") or "")
+        if not extractor:
+            if source_group == "youtube":
+                extractor = "youtube_ytdlp_format_url"
+            elif source_group == "instagram":
+                extractor = "instagram_ytdlp_format_url"
+            else:
+                extractor = "generic_ytdlp_format_url"
+
+        title = str(entry.get("title") or "")
+        return DownloadedMedia(
+            source_url=source_url,
+            media_type=media_type,
+            filename=filename,
+            content=content,
+            extractor=extractor,
+            title=title,
+        )
+
+    raise ValueError(f"포맷 URL 직접 다운로드 실패: {last_error}")
+
+
 def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> DownloadedMedia:
     YoutubeDL = _load_yt_dlp_cls()
+    treat_as_youtube = _is_youtube_url(source_url)
 
     with tempfile.TemporaryDirectory(prefix="url-media-") as tmp_dir:
         base_opts: Dict[str, Any] = {
@@ -691,7 +827,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
         format_candidates = _build_format_candidates(source_group=source_group, source_url=source_url)
 
         option_variants: List[Dict[str, Any]]
-        if source_group == "youtube":
+        if source_group == "youtube" or treat_as_youtube:
             option_variants = _build_youtube_option_variants(base_opts=base_opts, tmp_dir=tmp_dir)
         else:
             opts = dict(base_opts)
@@ -725,6 +861,28 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
                     raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {exc}") from exc
             if info is not None:
                 break
+
+        if info is None and treat_as_youtube:
+            # format expression이 전부 실패한 경우 메타데이터의 실제 스트림 URL로 한 번 더 시도
+            for variant_opts in option_variants:
+                try:
+                    meta_opts = dict(variant_opts)
+                    meta_opts["skip_download"] = True
+                    meta_opts["simulate"] = True
+                    meta_opts.pop("format", None)
+                    with YoutubeDL(meta_opts) as ydl:
+                        meta_info = ydl.extract_info(source_url, download=False)
+                    meta_entry = _pick_primary_entry(meta_info)
+                    if meta_entry:
+                        return _download_by_entry_format_urls(
+                            source_url=source_url,
+                            entry=meta_entry,
+                            max_bytes=max_bytes,
+                            source_group=source_group,
+                        )
+                except Exception as exc:
+                    last_error = exc
+                    continue
 
         if info is None:
             if saw_login_error or _is_login_or_rate_limit_error(str(last_error or "")):

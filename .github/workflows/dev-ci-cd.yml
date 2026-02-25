@@ -13,8 +13,8 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      backend: ${{ steps.filter.outputs.backend }}
-      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.backend }}
+      frontend: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.frontend }}
     steps:
       - uses: actions/checkout@v4
       - id: filter
@@ -27,6 +27,11 @@ jobs:
             frontend:
               - "frontend/**"
               - ".github/workflows/dev-ci-cd.yml"
+      - name: Show change detection
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "backend=${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.backend }}"
+          echo "frontend=${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.frontend }}"
 
   ci:
     needs: changes
@@ -118,6 +123,7 @@ jobs:
             set -e
             cd /opt/dbdbdeep-dev
             docker compose -f docker-compose.dev.yml pull
-            docker compose -f docker-compose.dev.yml up -d
+            docker compose -f docker-compose.dev.yml up -d --remove-orphans
+            docker compose -f docker-compose.dev.yml images
             docker image prune -f
             docker ps | egrep "dbdbdeep-(frontend|backend|redis)-dev" || true

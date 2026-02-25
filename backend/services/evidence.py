@@ -21,6 +21,13 @@ def _round6(value: float) -> float:
     return float(round(float(value), 6))
 
 
+def _encode_png_data_url_or_raise(img_rgb_uint8: np.ndarray, asset_name: str) -> str:
+    data_url = to_png_data_url(img_rgb_uint8)
+    if not isinstance(data_url, str) or not data_url.startswith("data:image/png;base64,"):
+        raise RuntimeError(f"{asset_name} PNG 인코딩 실패")
+    return data_url
+
+
 def _clamp_box(x1, y1, x2, y2, w, h):
     x1 = int(max(0, min(w - 1, x1)))
     x2 = int(max(0, min(w, x2)))
@@ -160,6 +167,11 @@ def build_evidence_for_face(
     fusion_w: float = 0.5,
     evidence_level: str = "mvp",
 ) -> Dict[str, Any]:
+    if face_rgb_uint8 is None or not isinstance(face_rgb_uint8, np.ndarray):
+        raise ValueError("face_rgb_uint8 입력이 올바르지 않습니다.")
+    if face_rgb_uint8.ndim != 3 or face_rgb_uint8.shape[2] != 3:
+        raise ValueError("face_rgb_uint8은 (H,W,3) RGB uint8 형태여야 합니다.")
+
     x_rgb = rgb_preprocess_tensor(face_rgb_uint8)
     x_freq = freq_preprocess_tensor(face_rgb_uint8)
 
@@ -167,7 +179,18 @@ def build_evidence_for_face(
     p_freq = infer_prob_binary(freq_model, x_freq)
     p_final = fuse_probs(p_rgb, p_freq, w=fusion_w)
 
-    heat = cam(x_rgb, class_idx=1)
+    try:
+        heat = cam(x_rgb, class_idx=1)
+    except Exception as exc:
+        raise RuntimeError(f"Grad-CAM 계산 실패: {exc}") from exc
+
+    heat = np.asarray(heat, dtype=np.float32)
+    if heat.ndim != 2 or heat.size == 0:
+        raise RuntimeError(f"Grad-CAM 출력 형식 오류: shape={getattr(heat, 'shape', None)}")
+    if not np.isfinite(heat).all():
+        heat = np.nan_to_num(heat, nan=0.0, posinf=1.0, neginf=0.0)
+    heat = np.clip(heat, 0.0, 1.0)
+
     gradcam_overlay_rgb = overlay_cam(face_rgb_uint8, heat, alpha=0.45)
 
     h, w, _ = face_rgb_uint8.shape
@@ -178,14 +201,17 @@ def build_evidence_for_face(
     spatial_notes = ["insightface_aligned_crop"]
     occ_deltas: Dict[str, float] = {}
     if evidence_level != "off" and p_final >= 0.60:
-        occ_deltas = occlusion_validate_topk(
-            infer_fn=lambda tensor: infer_prob_binary(rgb_model, tensor),
-            preprocess_fn=rgb_preprocess_tensor,
-            img_rgb_uint8=face_rgb_uint8,
-            region_masks=masks,
-            ranked_regions=ranked,
-            k=2,
-        )
+        try:
+            occ_deltas = occlusion_validate_topk(
+                infer_fn=lambda tensor: infer_prob_binary(rgb_model, tensor),
+                preprocess_fn=rgb_preprocess_tensor,
+                img_rgb_uint8=face_rgb_uint8,
+                region_masks=masks,
+                ranked_regions=ranked,
+                k=2,
+            )
+        except Exception as exc:
+            spatial_notes.append(f"occlusion_failed:{type(exc).__name__}")
     elif evidence_level == "off":
         spatial_notes.append("occlusion_skipped:evidence_off")
     else:
@@ -207,19 +233,28 @@ def build_evidence_for_face(
 
     band_deltas: Dict[str, float] = {}
     dominant_band = "unknown"
-    gray = to_gray(face_rgb_uint8)
-    energy_ratio_map = wavelet_band_energy_ratio(gray)
-    dominant_energy_band = (
-        max(energy_ratio_map.keys(), key=lambda k: energy_ratio_map[k]) if energy_ratio_map else "unknown"
-    )
+    energy_ratio_map: Dict[str, float] = {}
+    dominant_energy_band = "unknown"
 
     freq_notes = ["wavelet_haar_l2_ablation"]
-    if evidence_level != "off" and p_final >= 0.60:
-        band_deltas, dominant_band, _ = band_ablation_wavelet(
-            infer_fn=lambda tensor: infer_prob_binary(freq_model, tensor),
-            preprocess_fn=freq_preprocess_tensor,
-            img_rgb_uint8=face_rgb_uint8,
+    try:
+        gray = to_gray(face_rgb_uint8)
+        energy_ratio_map = wavelet_band_energy_ratio(gray)
+        dominant_energy_band = (
+            max(energy_ratio_map.keys(), key=lambda k: energy_ratio_map[k]) if energy_ratio_map else "unknown"
         )
+    except Exception as exc:
+        freq_notes.append(f"wavelet_energy_failed:{type(exc).__name__}")
+
+    if evidence_level != "off" and p_final >= 0.60:
+        try:
+            band_deltas, dominant_band, _ = band_ablation_wavelet(
+                infer_fn=lambda tensor: infer_prob_binary(freq_model, tensor),
+                preprocess_fn=freq_preprocess_tensor,
+                img_rgb_uint8=face_rgb_uint8,
+            )
+        except Exception as exc:
+            freq_notes.append(f"ablation_failed:{type(exc).__name__}")
     elif evidence_level == "off":
         freq_notes.append("ablation_skipped:evidence_off")
     else:
@@ -237,8 +272,8 @@ def build_evidence_for_face(
             band_energy.append({"band": band, "energy_ratio": _round6(energy_ratio_map[band])})
 
     assets = {
-        "face_crop_url": to_png_data_url(face_rgb_uint8),
-        "gradcam_overlay_url": to_png_data_url(gradcam_overlay_rgb),
+        "face_crop_url": _encode_png_data_url_or_raise(face_rgb_uint8, "face_crop"),
+        "gradcam_overlay_url": _encode_png_data_url_or_raise(gradcam_overlay_rgb, "gradcam_overlay"),
     }
 
     evidence = {

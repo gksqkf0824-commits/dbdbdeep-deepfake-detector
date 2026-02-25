@@ -1,41 +1,49 @@
+# syntax=docker/dockerfile:1.7
+
 # -------- 1) build stage --------
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 AS build
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    VENV_PATH=/opt/venv \
+    UV_LINK_MODE=copy
 WORKDIR /w
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-dev \
+    python3 python3-venv python3-dev \
     build-essential g++ cmake \
+    ca-certificates \
+ && update-ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.6.10 /uv /uvx /bin/
 
 COPY requirements.txt /w/requirements.txt
 
-RUN python3 -m pip install --upgrade pip wheel
+RUN python3 -m venv "${VENV_PATH}"
 
-# requirements를 wheel로 미리 빌드(insightface 포함)
-RUN pip wheel --no-cache-dir --wheel-dir /w/wheels -r /w/requirements.txt
+# torch/torchvision (cu118) + requirements 설치를 uv로 일원화
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python "${VENV_PATH}/bin/python" \
+      torch torchvision --index-url https://download.pytorch.org/whl/cu118 \
+ && uv pip install --python "${VENV_PATH}/bin/python" -r /w/requirements.txt
 
 
 # -------- 2) runtime stage --------
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    VENV_PATH=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}"
 WORKDIR /app
 
 # 런타임 최소 의존성(opencv 등)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip nodejs \
+    python3 nodejs \
     libgl1 libglib2.0-0 \
     ca-certificates ffmpeg \
  && update-ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# torch/torchvision (cu118)
-RUN python3 -m pip install --upgrade pip && \
-    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu118
-
-# 빌드 stage에서 만든 wheels 설치
-COPY --from=build /w/wheels /w/wheels
-RUN pip install --no-cache-dir /w/wheels/*
+# 빌드 stage에서 준비한 Python 환경 복사
+COPY --from=build "${VENV_PATH}" "${VENV_PATH}"
 
 # 앱 코드 복사
 COPY . /app

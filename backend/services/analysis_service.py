@@ -3,6 +3,7 @@ import secrets
 import tempfile
 import uuid
 import base64
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -239,6 +240,7 @@ def _build_video_face_not_detected_result(
     sampled_frames: int,
     failed_frames: int,
     sampling_meta: dict | None = None,
+    frame_failure_reasons: Dict[str, int] | None = None,
 ) -> dict:
     result = {
         "confidence": None,
@@ -267,7 +269,128 @@ def _build_video_face_not_detected_result(
     }
     if isinstance(sampling_meta, dict):
         result["video_meta"].update(sampling_meta)
+    if isinstance(frame_failure_reasons, dict) and frame_failure_reasons:
+        result["video_meta"]["frame_failure_reasons"] = dict(frame_failure_reasons)
     return result
+
+
+def _extract_gradcam_overlay_url(rep_payload: Dict[str, Any]) -> str:
+    if not isinstance(rep_payload, dict):
+        return ""
+    assets = rep_payload.get("assets")
+    if not isinstance(assets, dict):
+        return ""
+    url = str(assets.get("gradcam_overlay_url") or "").strip()
+    return url
+
+
+def _cached_has_representative_gradcam(cached: Dict[str, Any]) -> bool:
+    if not isinstance(cached, dict):
+        return False
+    rep = cached.get("representative_analysis")
+    if not isinstance(rep, dict):
+        return False
+    url = _extract_gradcam_overlay_url(rep)
+    return bool(url)
+
+
+def _build_representative_analysis(
+    successful_frames: List[np.ndarray],
+    successful_frame_indices: List[int],
+    scores: List[float],
+    target_score: float,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    errors: List[str] = []
+
+    if not successful_frames or not scores:
+        return None, ["대표 프레임 후보가 없습니다."]
+    if detector.pixel_model is None or detector.freq_model is None:
+        return None, ["대표 프레임 근거 생성을 위한 모델이 준비되지 않았습니다."]
+
+    score_arr = np.asarray(scores, dtype=np.float32)
+    if score_arr.size == 0:
+        return None, ["대표 프레임 점수 배열이 비어 있습니다."]
+
+    candidate_order = np.argsort(np.abs(score_arr - float(target_score))).tolist()
+    max_candidates = min(5, len(candidate_order))
+
+    for pos in candidate_order[:max_candidates]:
+        idx = int(pos)
+        sample_index = int(successful_frame_indices[idx]) if idx < len(successful_frame_indices) else idx
+        frame_bgr = successful_frames[idx]
+        frame_score = float(scores[idx])
+
+        try:
+            rep_faces = detect_faces_with_aligned_crops(
+                image_bgr=frame_bgr,
+                margin=0.15,
+                target_size=224,
+                max_faces=1,
+                prioritize_frontal=True,
+            )
+        except Exception as exc:
+            errors.append(f"sample {sample_index}: 얼굴 재검출 실패({type(exc).__name__})")
+            continue
+
+        if not rep_faces:
+            errors.append(f"sample {sample_index}: 얼굴 미탐지")
+            continue
+
+        rep_cam = None
+        try:
+            rep_cam = GradCAM(detector.pixel_model, get_cam_target_layer(detector.pixel_model))
+            rep_out = build_evidence_for_face(
+                face_rgb_uint8=rep_faces[0]["crop_rgb"],
+                landmarks=rep_faces[0]["landmarks"],
+                rgb_model=detector.pixel_model,
+                freq_model=detector.freq_model,
+                cam=rep_cam,
+                fusion_w=0.5,
+                evidence_level="mvp",
+            )
+        except Exception as exc:
+            errors.append(f"sample {sample_index}: 근거 생성 실패({type(exc).__name__})")
+            continue
+        finally:
+            if rep_cam is not None:
+                rep_cam.close()
+
+        gradcam_url = _extract_gradcam_overlay_url({"assets": rep_out.get("assets", {})})
+        if not gradcam_url:
+            errors.append(f"sample {sample_index}: Grad-CAM 에셋 누락")
+            continue
+
+        try:
+            explanation = explain_from_evidence(
+                evidence=rep_out.get("evidence", {}),
+                score=rep_out.get("score", {}),
+                media_mode_hint="video",
+                use_openai=True,
+            )
+        except Exception as exc:
+            errors.append(f"sample {sample_index}: 설명 생성 실패({type(exc).__name__})")
+            explanation = {
+                "summary": "대표 프레임 근거는 생성되었지만 설명 생성에 실패했습니다.",
+                "summary_source": "fallback:error",
+                "spatial_findings": [],
+                "frequency_findings": [],
+                "interpretation_guide": [],
+                "next_steps": [],
+                "caveats": [],
+            }
+
+        payload = {
+            "sample_index": sample_index,
+            "frame_score": round(frame_score, 2),
+            "target_score": round(float(target_score), 2),
+            "abs_diff": round(abs(frame_score - float(target_score)), 2),
+            "assets": rep_out.get("assets", {}),
+            "evidence": rep_out.get("evidence", {}),
+            "explanation": explanation,
+        }
+        return payload, errors
+
+    return None, errors
 
 
 # =========================
@@ -317,23 +440,29 @@ def analyze_evidence_bytes(
             "ai_comment_source": "fallback:no_face",
         }
 
-    cam_target_layer = get_cam_target_layer(rgb_model)
-    cam = GradCAM(rgb_model, cam_target_layer)
+    try:
+        cam_target_layer = get_cam_target_layer(rgb_model)
+        cam = GradCAM(rgb_model, cam_target_layer)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Grad-CAM 초기화 실패: {exc}") from exc
 
     faces_out = []
     p_rgb_list, p_freq_list, p_final_list = [], [], []
 
     try:
         for i, face in enumerate(faces):
-            out = build_evidence_for_face(
-                face_rgb_uint8=face["crop_rgb"],
-                landmarks=face["landmarks"],
-                rgb_model=rgb_model,
-                freq_model=freq_model,
-                cam=cam,
-                fusion_w=float(fusion_w),
-                evidence_level=lv,
-            )
+            try:
+                out = build_evidence_for_face(
+                    face_rgb_uint8=face["crop_rgb"],
+                    landmarks=face["landmarks"],
+                    rgb_model=rgb_model,
+                    freq_model=freq_model,
+                    cam=cam,
+                    fusion_w=float(fusion_w),
+                    evidence_level=lv,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"근거 생성 실패(face_id={i}): {exc}") from exc
 
             score = out["score"]
             evidence = out["evidence"]
@@ -403,9 +532,11 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
 
     cached = redis_get_json(redis_db, video_cache_key)
     if cached is not None and has_frame_series(cached, "video_frame_pixel_scores") and has_frame_series(cached, "video_frame_freq_scores"):
-        cached_response = dict(cached)
-        cached_response["input_media_type"] = "video"
-        return store_result_and_make_response(cached_response)
+        # 과거 캐시 중 대표 프레임 근거(Grad-CAM)가 누락된 케이스는 재생성한다.
+        if bool(cached.get("inference_failed")) or _cached_has_representative_gradcam(cached):
+            cached_response = dict(cached)
+            cached_response["input_media_type"] = "video"
+            return store_result_and_make_response(cached_response)
 
     suffix = os.path.splitext(filename or "")[1] or ".mp4"
     tmp_path = None
@@ -429,6 +560,7 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
         successful_frames = []
         successful_frame_indices = []
         failed = 0
+        frame_failure_reasons: Dict[str, int] = {}
 
         for frame_idx, fr in enumerate(frames):
             try:
@@ -441,8 +573,10 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
                 freq_scores.append(f_score)
                 successful_frames.append(fr)
                 successful_frame_indices.append(frame_idx)
-            except Exception:
+            except Exception as exc:
                 failed += 1
+                err_type = type(exc).__name__
+                frame_failure_reasons[err_type] = int(frame_failure_reasons.get(err_type, 0)) + 1
                 continue
 
         if len(scores) == 0:
@@ -450,6 +584,7 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
                 sampled_frames=len(frames),
                 failed_frames=failed,
                 sampling_meta=meta,
+                frame_failure_reasons=frame_failure_reasons,
             )
             cache_payload = dict(analysis_result)
             redis_set_json(redis_db, video_cache_key, cache_payload, ex=CACHE_TTL_SEC)
@@ -484,60 +619,22 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
             "pixel_freq_agg_mode": AGG_MODE_VIDEO,
             "topk": TOPK,
         }
+        if frame_failure_reasons:
+            analysis_result["video_meta"]["frame_failure_reasons"] = frame_failure_reasons
         analysis_result["video_meta"].update(trimmed_meta)
         analysis_result["video_meta"].update(meta)
 
-        representative_payload = None
-        try:
-            if successful_frames and detector.pixel_model is not None and detector.freq_model is not None:
-                score_arr = np.asarray(scores, dtype=np.float32)
-                rep_pos = int(np.argmin(np.abs(score_arr - float(video_score))))
-                rep_frame_bgr = successful_frames[rep_pos]
-                rep_sample_index = int(successful_frame_indices[rep_pos])
-                rep_score = float(scores[rep_pos])
-
-                rep_faces = detect_faces_with_aligned_crops(
-                    image_bgr=rep_frame_bgr,
-                    margin=0.15,
-                    target_size=224,
-                    max_faces=1,
-                    prioritize_frontal=False,
-                )
-
-                if rep_faces:
-                    rep_cam = GradCAM(detector.pixel_model, get_cam_target_layer(detector.pixel_model))
-                    try:
-                        rep_out = build_evidence_for_face(
-                            face_rgb_uint8=rep_faces[0]["crop_rgb"],
-                            landmarks=rep_faces[0]["landmarks"],
-                            rgb_model=detector.pixel_model,
-                            freq_model=detector.freq_model,
-                            cam=rep_cam,
-                            fusion_w=0.5,
-                            evidence_level="mvp",
-                        )
-                    finally:
-                        rep_cam.close()
-
-                    representative_payload = {
-                        "sample_index": rep_sample_index,
-                        "frame_score": round(rep_score, 2),
-                        "target_score": round(float(video_score), 2),
-                        "abs_diff": round(abs(rep_score - float(video_score)), 2),
-                        "assets": rep_out.get("assets", {}),
-                        "evidence": rep_out.get("evidence", {}),
-                        "explanation": explain_from_evidence(
-                            evidence=rep_out.get("evidence", {}),
-                            score=rep_out.get("score", {}),
-                            media_mode_hint="video",
-                            use_openai=True,
-                        ),
-                    }
-        except Exception:
-            representative_payload = None
+        representative_payload, representative_errors = _build_representative_analysis(
+            successful_frames=successful_frames,
+            successful_frame_indices=successful_frame_indices,
+            scores=scores,
+            target_score=float(video_score),
+        )
 
         if representative_payload is not None:
             analysis_result["representative_analysis"] = representative_payload
+        elif representative_errors:
+            analysis_result["representative_analysis_error"] = representative_errors[:5]
 
         ai_comment = generate_video_ai_comment(
             final_scores=[float(s) for s in scores],

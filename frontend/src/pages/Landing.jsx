@@ -122,7 +122,7 @@ export default function Landing() {
 
       <section className="pt-40 pb-32 flex flex-col items-center justify-center relative w-full px-6 mt-10">
         <div className="mb-6 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-50 text-[#3182f6] text-sm font-semibold">
-          <span className="w-2 h-2 rounded-full bg-[#3182f6] animate-pulse"></span>
+          <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
           실시간 딥페이크 탐지 중
         </div>
 

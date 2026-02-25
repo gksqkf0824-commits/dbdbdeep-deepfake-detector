@@ -37,19 +37,14 @@ export default function Header() {
     }
   };
 
-  const handleSolutionClick = () => {
-    const scrollToTopNow = () => {
-      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-    };
+const handleSolutionClick = () => {
+  if (location.pathname === "/analyze") {
+    window.location.reload(); // ⭐ 강제 새로고침
+    return;
+  }
 
-    if (location.pathname === "/analyze") {
-      scrollToTopNow();
-      return;
-    }
-
-    nav("/analyze");
-    setTimeout(scrollToTopNow, 0);
-  };
+  nav("/analyze");
+};
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">

@@ -72,8 +72,14 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           context: ./backend
           push: true
-          cache-from: type=gha,scope=backend-dev
-          cache-to: type=gha,mode=max,scope=backend-dev
+          provenance: false
+          sbom: false
+          cache-from: |
+            type=gha,scope=backend-dev
+            type=registry,ref=ghcr.io/${{ github.repository }}-backend:dev-latest
+          cache-to: type=gha,mode=min,scope=backend-dev
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
           tags: |
             ghcr.io/${{ github.repository }}-backend:dev-latest
             ghcr.io/${{ github.repository }}-backend:dev-${{ github.sha }}
@@ -85,8 +91,14 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           context: ./frontend
           push: true
-          cache-from: type=gha,scope=frontend-dev
-          cache-to: type=gha,mode=max,scope=frontend-dev
+          provenance: false
+          sbom: false
+          cache-from: |
+            type=gha,scope=frontend-dev
+            type=registry,ref=ghcr.io/${{ github.repository }}-frontend:dev-latest
+          cache-to: type=gha,mode=min,scope=frontend-dev
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
           tags: |
             ghcr.io/${{ github.repository }}-frontend:dev-latest
             ghcr.io/${{ github.repository }}-frontend:dev-${{ github.sha }}

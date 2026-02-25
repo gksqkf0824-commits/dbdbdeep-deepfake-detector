@@ -278,11 +278,19 @@ function parseLegacyResult(response) {
         }
       : null;
   const sourcePreview = normalizeSourcePreview(data?.source_preview || response?.source_preview || null);
+  const videoMeta = data?.video_meta || {};
+  const usedFrames = Number(videoMeta?.used_frames);
+  const failedFrames = Number(videoMeta?.failed_frames);
+  const isFaceNotDetectedFailure =
+    Boolean(data?.inference_failed) ||
+    String(data?.failure_reason || "").toLowerCase() === "face_not_detected" ||
+    ((Number.isFinite(usedFrames) ? usedFrames : 0) === 0 &&
+      (Number.isFinite(failedFrames) ? failedFrames : 0) > 0);
 
   return {
     ...EMPTY_RESULT,
     requestId: "",
-    isUndetermined: false,
+    isUndetermined: isFaceNotDetectedFailure,
     confidence: Number.isFinite(data.confidence) ? data.confidence : null,
     pixelScore: Number.isFinite(data.pixel_score) ? data.pixel_score : null,
     freqScore: Number.isFinite(data.freq_score) ? data.freq_score : null,
@@ -290,7 +298,7 @@ function parseLegacyResult(response) {
     pValue: Number.isFinite(data.p_value) ? data.p_value : null,
     reliability: data.reliability || "",
     aiCommentSource: String(data.ai_comment_source || "").trim(),
-    videoMeta: data.video_meta || null,
+    videoMeta: videoMeta || null,
     videoRepresentativeConfidence: Number.isFinite(data.video_representative_confidence)
       ? data.video_representative_confidence
       : null,
@@ -299,14 +307,15 @@ function parseLegacyResult(response) {
     videoFrameFreqScores,
     timeline,
     preprocessed,
-    comment:
-      String(data.ai_comment || "").trim() ||
-      buildCommonComment({
-        isFake: inferredIsFake,
-        confidence: data.confidence,
-        pixelScore: data.pixel_score,
-        freqScore: data.freq_score,
-      }),
+    comment: isFaceNotDetectedFailure
+      ? "얼굴 미탐지로 인해 추론이 실패했습니다"
+      : String(data.ai_comment || "").trim() ||
+        buildCommonComment({
+          isFake: inferredIsFake,
+          confidence: data.confidence,
+          pixelScore: data.pixel_score,
+          freqScore: data.freq_score,
+        }),
     topRegions: Array.isArray(representativeSpatialEvidence?.regions_topk)
       ? representativeSpatialEvidence.regions_topk
       : [],
@@ -606,8 +615,9 @@ export default function Analyze() {
   };
 
   const resetAnalysis = () => {
+    const currentMode = inputMode;
     if (previewUrl && String(previewUrl).startsWith("blob:")) URL.revokeObjectURL(previewUrl);
-    setInputMode("file");
+    setInputMode(currentMode);
     setFile(null);
     setFileType("");
     setPreviewUrl(null);
@@ -731,7 +741,7 @@ export default function Analyze() {
 
         </div>
 
-        <ExplainPanel result={result} />
+        {result && !result?.isUndetermined ? <ExplainPanel result={result} /> : null}
       </div>
     </div>
   );

@@ -235,6 +235,41 @@ def _build_source_preview_from_downloaded(source_url: str, media_type: str, file
     return preview
 
 
+def _build_video_face_not_detected_result(
+    sampled_frames: int,
+    failed_frames: int,
+    sampling_meta: dict | None = None,
+) -> dict:
+    result = {
+        "confidence": None,
+        "pixel_score": None,
+        "freq_score": None,
+        "is_fake": None,
+        "p_value": None,
+        "reliability": "",
+        "video_representative_confidence": None,
+        "video_frame_confidences": [],
+        "video_frame_pixel_scores": [],
+        "video_frame_freq_scores": [],
+        "video_meta": {
+            "sampled_frames": int(sampled_frames),
+            "used_frames": 0,
+            "failed_frames": int(failed_frames),
+            "agg_mode": "Trimmed Mean 10 Percent",
+            "pixel_freq_agg_mode": AGG_MODE_VIDEO,
+            "topk": TOPK,
+        },
+        "ai_comment": "얼굴이 감지되지 않아 추론을 완료하지 못했습니다. 다른 구도/해상도의 영상을 사용해 다시 시도해 주세요.",
+        "ai_comment_source": "rule_based",
+        "input_media_type": "video",
+        "inference_failed": True,
+        "failure_reason": "face_not_detected",
+    }
+    if isinstance(sampling_meta, dict):
+        result["video_meta"].update(sampling_meta)
+    return result
+
+
 # =========================
 # Image evidence inference
 # =========================
@@ -411,10 +446,14 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
                 continue
 
         if len(scores) == 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"모든 프레임 추론 실패 (sampled={len(frames)}, failed={failed}).",
+            analysis_result = _build_video_face_not_detected_result(
+                sampled_frames=len(frames),
+                failed_frames=failed,
+                sampling_meta=meta,
             )
+            cache_payload = dict(analysis_result)
+            redis_set_json(redis_db, video_cache_key, cache_payload, ex=CACHE_TTL_SEC)
+            return store_result_and_make_response(analysis_result)
 
         video_score, trimmed_meta = trimmed_mean_confidence(
             scores,

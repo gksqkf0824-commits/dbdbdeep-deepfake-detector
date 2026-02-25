@@ -216,9 +216,9 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
       </div>
 
       {/* Analysis Charts */}
-      <div className="mt-8 flex-grow flex flex-col justify-end">
+      <div className={result && isUndetermined ? "mt-8" : "mt-8 flex-grow flex flex-col justify-end"}>
         {result && isUndetermined ? (
-          <div className="border border-red-200 rounded-lg p-6 bg-red-50/40 shadow-sm min-h-[280px] flex items-center justify-center text-center">
+          <div className="border border-red-200 rounded-lg px-6 py-14 bg-red-50/40 shadow-sm flex items-center justify-center text-center">
             <div className="text-red-600 font-semibold text-lg">얼굴 미탐지로 인해 추론이 실패했습니다</div>
           </div>
         ) : isVideo ? (

@@ -110,12 +110,6 @@ Final = 0.37 * Image + 0.63 * Frequency
 앙상블 적용 시 단일 모델 대비 성능이 크게 향상되었습니다.
 
 ---
-
-## 🚀 Getting Started
-
-```bash
-git clone https://github.com/soyun/dbdbdeep-deepfake-detector.git
-cd dbdbdeep-deepfake-detector
 👥 Team DBDBDEEP
 
 조영준 (팀장): 이미지 모델, 데이터 구축

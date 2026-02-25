@@ -3,7 +3,7 @@ URL 기반 미디어(이미지/영상) 다운로드 서비스.
 
 지원 분기:
 1) YouTube URL 동영상/이미지 추론(yt-dlp)
-2) Instagram URL 동영상/이미지 추론(Instaloader + yt-dlp fallback)
+2) Instagram URL 동영상/이미지 추론(Instaloader + OpenGraph + yt-dlp fallback)
 3) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
 """
 
@@ -16,8 +16,9 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "bmp", "gif"}
 _VIDEO_EXTS = {"mp4", "mov", "avi", "mkv", "webm", "m4v", "3gp", "ts"}
@@ -63,6 +64,7 @@ URL_MEDIA_MAX_MB = _env_int("URL_MEDIA_MAX_MB", 120, 1)
 URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web,tv_embedded")
+YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web,web_safari")
 
 INSTAGRAM_SESSION_ID = (os.getenv("INSTAGRAM_SESSION_ID") or "").strip()
 INSTAGRAM_USER_AGENT = (os.getenv("INSTAGRAM_USER_AGENT") or _HTTP_USER_AGENT).strip() or _HTTP_USER_AGENT
@@ -179,6 +181,123 @@ def _filename_from_media_url(media_url: str, default_ext: str, fallback_name: st
         root = root or fallback_name
         return f"{root}.{default_ext}"
     return f"{fallback_name}.{default_ext}"
+
+
+class _MetaTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.meta: Dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if str(tag or "").lower() != "meta":
+            return
+
+        attr_map: Dict[str, str] = {}
+        for key, value in attrs:
+            k = str(key or "").strip().lower()
+            v = str(value or "").strip()
+            if k:
+                attr_map[k] = v
+
+        key = str(attr_map.get("property") or attr_map.get("name") or "").strip().lower()
+        content = str(attr_map.get("content") or "").strip()
+        if key and content and key not in self.meta:
+            self.meta[key] = content
+
+
+def _pick_opengraph_media_url(meta: Dict[str, str], source_url: str) -> Tuple[str, str]:
+    low = source_url.lower()
+    prefer_video = "/reel/" in low or "/reels/" in low
+
+    candidates: List[Tuple[str, str]] = []
+    if prefer_video:
+        candidates.extend(
+            [
+                ("video", meta.get("og:video:secure_url", "")),
+                ("video", meta.get("og:video:url", "")),
+                ("video", meta.get("og:video", "")),
+            ]
+        )
+    candidates.extend(
+        [
+            ("image", meta.get("og:image:secure_url", "")),
+            ("image", meta.get("og:image:url", "")),
+            ("image", meta.get("og:image", "")),
+            ("image", meta.get("twitter:image:src", "")),
+            ("image", meta.get("twitter:image", "")),
+        ]
+    )
+    if not prefer_video:
+        candidates.extend(
+            [
+                ("video", meta.get("og:video:secure_url", "")),
+                ("video", meta.get("og:video:url", "")),
+                ("video", meta.get("og:video", "")),
+            ]
+        )
+
+    seen: set[str] = set()
+    for media_type, raw_url in candidates:
+        url = str(raw_url or "").strip()
+        if not url:
+            continue
+        absolute_url = urljoin(source_url, url)
+        if absolute_url in seen:
+            continue
+        seen.add(absolute_url)
+        return media_type, absolute_url
+
+    raise ValueError("OpenGraph 메타에서 미디어 URL을 찾지 못했습니다.")
+
+
+def _download_media_from_opengraph(source_url: str, max_bytes: int) -> DownloadedMedia:
+    try:
+        import requests
+    except Exception as exc:
+        raise RuntimeError("OpenGraph 파싱을 위해 requests 라이브러리가 필요합니다.") from exc
+
+    headers = {"User-Agent": _HTTP_USER_AGENT}
+    with requests.get(
+        source_url,
+        timeout=max(URL_MEDIA_TIMEOUT_SEC, 10),
+        headers=headers,
+        allow_redirects=True,
+    ) as resp:
+        resp.raise_for_status()
+        parser = _MetaTagParser()
+        parser.feed(resp.text or "")
+        meta = dict(parser.meta)
+
+    media_type_hint, media_url = _pick_opengraph_media_url(meta, source_url=source_url)
+    content, content_type = _stream_download_bytes(
+        url=media_url,
+        max_bytes=max_bytes,
+        timeout_sec=URL_MEDIA_TIMEOUT_SEC,
+        session=None,
+        headers=headers,
+    )
+
+    detected_type = media_type_hint
+    if not media_type_hint:
+        detected_type = _media_type_from_content_type(content_type)
+    elif media_type_hint == "image" and _media_type_from_content_type(content_type) == "video":
+        detected_type = "video"
+
+    default_ext = _path_ext_from_url(media_url) or _content_ext_from_type(content_type) or (
+        "mp4" if detected_type == "video" else "jpg"
+    )
+    filename = _filename_from_media_url(media_url, default_ext=default_ext, fallback_name="og_media")
+
+    title = str(meta.get("og:title") or meta.get("twitter:title") or "").strip()
+
+    return DownloadedMedia(
+        source_url=source_url,
+        media_type="video" if detected_type == "video" else "image",
+        filename=filename,
+        content=content,
+        extractor="opengraph_meta",
+        title=title,
+    )
 
 
 def _stream_download_bytes(
@@ -343,15 +462,66 @@ def _apply_js_runtime_option(opts: Dict[str, Any]) -> None:
         opts["js_runtimes"] = YTDLP_JS_RUNTIMES
 
 
-def _apply_youtube_extractor_option(opts: Dict[str, Any]) -> None:
-    if not YTDLP_YOUTUBE_CLIENTS:
+def _apply_youtube_extractor_option(opts: Dict[str, Any], player_clients: Optional[List[str]] = None) -> None:
+    clients = [str(c or "").strip() for c in (player_clients or YTDLP_YOUTUBE_CLIENTS) if str(c or "").strip()]
+    if not clients:
         return
 
     extractor_args = dict(opts.get("extractor_args") or {})
     yt_args = dict(extractor_args.get("youtube") or {})
-    yt_args["player_client"] = list(YTDLP_YOUTUBE_CLIENTS)
+    yt_args["player_client"] = clients
     extractor_args["youtube"] = yt_args
     opts["extractor_args"] = extractor_args
+
+
+def _youtube_client_profiles() -> List[List[str]]:
+    profiles: List[List[str]] = []
+    seen: set[Tuple[str, ...]] = set()
+
+    for raw in (YTDLP_YOUTUBE_CLIENTS, YTDLP_YOUTUBE_ALT_CLIENTS):
+        profile = [str(c or "").strip() for c in raw if str(c or "").strip()]
+        if not profile:
+            continue
+        key = tuple(profile)
+        if key in seen:
+            continue
+        seen.add(key)
+        profiles.append(profile)
+
+    if not profiles:
+        profiles.append(["android", "web", "tv_embedded"])
+    return profiles
+
+
+def _build_youtube_option_variants(base_opts: Dict[str, Any], tmp_dir: str) -> List[Dict[str, Any]]:
+    variants: List[Dict[str, Any]] = []
+    profiles = _youtube_client_profiles()
+
+    if YTDLP_COOKIEFILE:
+        for clients in profiles:
+            opts = dict(base_opts)
+            try:
+                _apply_cookiefile_option(opts, tmp_dir)
+            except Exception:
+                continue
+            _apply_youtube_extractor_option(opts, player_clients=clients)
+            variants.append(opts)
+
+    for clients in profiles:
+        opts = dict(base_opts)
+        _apply_youtube_extractor_option(opts, player_clients=clients)
+        variants.append(opts)
+
+    # extractor_args를 완전히 제거한 raw 변형도 마지막에 시도
+    raw_opts = dict(base_opts)
+    if YTDLP_COOKIEFILE:
+        try:
+            _apply_cookiefile_option(raw_opts, tmp_dir)
+        except Exception:
+            pass
+    variants.append(raw_opts)
+
+    return variants
 
 
 def _build_format_candidates(source_group: str, source_url: str) -> List[Optional[str]]:
@@ -516,38 +686,48 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
             "retries": 2,
             "fragment_retries": 2,
         }
-        _apply_cookiefile_option(base_opts, tmp_dir)
         _apply_js_runtime_option(base_opts)
-        if source_group == "youtube":
-            _apply_youtube_extractor_option(base_opts)
 
         format_candidates = _build_format_candidates(source_group=source_group, source_url=source_url)
 
+        option_variants: List[Dict[str, Any]]
+        if source_group == "youtube":
+            option_variants = _build_youtube_option_variants(base_opts=base_opts, tmp_dir=tmp_dir)
+        else:
+            opts = dict(base_opts)
+            _apply_cookiefile_option(opts, tmp_dir)
+            option_variants = [opts]
+
         info = None
         last_error: Optional[Exception] = None
-        for fmt in format_candidates:
-            try:
-                opts = dict(base_opts)
-                if fmt:
-                    opts["format"] = fmt
-                else:
-                    opts.pop("format", None)
-                with YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(source_url, download=True)
+        saw_login_error = False
+        for variant_opts in option_variants:
+            for fmt in format_candidates:
+                try:
+                    opts = dict(variant_opts)
+                    if fmt:
+                        opts["format"] = fmt
+                    else:
+                        opts.pop("format", None)
+                    with YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(source_url, download=True)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    msg = str(exc)
+                    if _is_format_unavailable_error(msg):
+                        continue
+                    if _is_ffmpeg_merge_error(msg):
+                        continue
+                    if _is_login_or_rate_limit_error(msg):
+                        saw_login_error = True
+                        break
+                    raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {exc}") from exc
+            if info is not None:
                 break
-            except Exception as exc:
-                last_error = exc
-                msg = str(exc)
-                if _is_format_unavailable_error(msg):
-                    continue
-                if _is_ffmpeg_merge_error(msg):
-                    continue
-                if _is_login_or_rate_limit_error(msg):
-                    raise ValueError(_login_or_rate_limit_detail(source_url)) from exc
-                raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {exc}") from exc
 
         if info is None:
-            if _is_login_or_rate_limit_error(str(last_error or "")):
+            if saw_login_error or _is_login_or_rate_limit_error(str(last_error or "")):
                 raise ValueError(_login_or_rate_limit_detail(source_url))
             raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {last_error}")
 
@@ -745,32 +925,50 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
     """
     URL 미디어 다운로드 진입점.
     - YouTube URL: yt-dlp 전용 경로
-    - Instagram URL: Instaloader 우선 + yt-dlp fallback 경로
+    - Instagram URL: Instaloader 우선 + OpenGraph + yt-dlp fallback 경로
     - 기타 URL: direct-http 우선, 실패 시 yt-dlp generic 경로
     """
     validated_url = _validate_source_url(source_url)
     max_bytes = URL_MEDIA_MAX_MB * 1024 * 1024
 
     if _is_instagram_url(validated_url):
+        fallback_errors: List[str] = []
+
         try:
             return _download_instagram_media(validated_url, max_bytes=max_bytes)
         except Exception as insta_exc:
-            ytdlp_errors: List[str] = []
+            fallback_errors.append(f"instaloader: {insta_exc}")
 
-            for source_group in ("instagram", "generic"):
-                try:
-                    return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group=source_group)
-                except Exception as ytdlp_exc:
-                    ytdlp_errors.append(f"{source_group}: {ytdlp_exc}")
+        try:
+            return _download_media_from_opengraph(validated_url, max_bytes=max_bytes)
+        except Exception as og_exc:
+            fallback_errors.append(f"open_graph: {og_exc}")
 
-            joined_ytdlp_errors = " | ".join(ytdlp_errors) if ytdlp_errors else "알 수 없는 오류"
-            raise ValueError(
-                "Instagram URL 처리 실패(Instaloader + yt-dlp fallback). "
-                f"instaloader: {insta_exc}; yt-dlp: {joined_ytdlp_errors}"
-            ) from insta_exc
+        for source_group in ("instagram", "generic"):
+            try:
+                return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group=source_group)
+            except Exception as ytdlp_exc:
+                fallback_errors.append(f"yt-dlp/{source_group}: {ytdlp_exc}")
+
+        joined_errors = " | ".join(fallback_errors) if fallback_errors else "알 수 없는 오류"
+        raise ValueError(
+            "Instagram URL 처리 실패(Instaloader + OpenGraph + yt-dlp fallback). "
+            f"{joined_errors}"
+        )
 
     if _is_youtube_url(validated_url):
-        return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")
+        try:
+            return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")
+        except Exception as ytdlp_exc:
+            try:
+                return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="generic")
+            except Exception as generic_exc:
+                if _is_login_or_rate_limit_error(str(ytdlp_exc)) or _is_login_or_rate_limit_error(str(generic_exc)):
+                    raise ValueError(_login_or_rate_limit_detail(validated_url)) from generic_exc
+                raise ValueError(
+                    "YouTube URL 처리 실패(yt-dlp youtube + generic fallback). "
+                    f"youtube: {ytdlp_exc}; generic: {generic_exc}"
+                ) from generic_exc
 
     # 기타 웹사이트: 직링크면 direct, 아니면 yt-dlp generic
     if _looks_like_direct_media_url(validated_url):

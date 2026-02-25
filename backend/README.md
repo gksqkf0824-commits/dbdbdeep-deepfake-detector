@@ -30,6 +30,9 @@ INSTAGRAM_SESSION_ID=...
 
 # 선택: YouTube extractor client 우선순위
 YTDLP_YOUTUBE_CLIENTS=android,web,tv_embedded
+
+# 선택: YouTube 보조 client 우선순위(기본값: ios,mweb,web,web_safari)
+YTDLP_YOUTUBE_ALT_CLIENTS=ios,mweb,web,web_safari
 ```
 
 Docker Compose 예시:
@@ -41,6 +44,7 @@ services:
       - YTDLP_COOKIEFILE=/run/secrets/ig_cookies.txt
       - INSTAGRAM_SESSION_ID=${INSTAGRAM_SESSION_ID}
       - YTDLP_YOUTUBE_CLIENTS=android,web,tv_embedded
+      - YTDLP_YOUTUBE_ALT_CLIENTS=ios,mweb,web,web_safari
     volumes:
       - /opt/dbdbdeep-dev/secrets/ig_cookies.txt:/run/secrets/ig_cookies.txt:ro
 ```
@@ -48,3 +52,4 @@ services:
 주의:
 - 쿠키 파일은 저장소에 커밋하지 마세요.
 - Instagram private/제한 게시물은 세션/쿠키가 없으면 실패할 수 있습니다.
+- Instagram 공개 게시물은 Instaloader 실패 시 OpenGraph/yt-dlp 순서로 자동 폴백합니다.

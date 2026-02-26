@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
 export default function UploadCard({
   mode = "file",
@@ -17,6 +17,7 @@ export default function UploadCard({
   onUrlChange,
 }) {
   const inputRef = useRef(null);
+  const [isDragging, setIsDragging] = useState(false); // 드래그 상태 관리
 
   const openPicker = () => {
     if (mode === "file") inputRef.current?.click();
@@ -27,6 +28,31 @@ export default function UploadCard({
     if (!f) return;
     onPickFile(f);
   };
+
+  // --- 드래그 앤 드롭 핸들러 추가 ---
+  const onDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const onDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const f = e.dataTransfer.files?.[0];
+    if (f && mode === "file") {
+      onPickFile(f);
+    }
+  };
+  // ------------------------------
 
   const defaultComment =
     mode === "file"
@@ -70,13 +96,9 @@ export default function UploadCard({
   const urlPreviewVideo = urlPreview?.url || null;
 
   return (
-    /**
-     * 핵심 수정: max-width를 [280px]에서 [400px]로 늘려 압축률을 절반으로 낮춤.
-     * 여전히 ml-0 mr-auto를 통해 왼쪽 정렬을 유지합니다.
-     */
     <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-5 flex flex-col h-full w-full max-w-[400px] ml-0 mr-auto">
       
-      {/* Header - 기존 크기와 폰트 유지 */}
+      {/* Header */}
       <div className="flex items-center justify-between mb-5 flex-shrink-0">
         <div className="font-semibold text-slate-900 text-lg">
           분석 대상 업로드
@@ -110,12 +132,19 @@ export default function UploadCard({
         </button>
       </div>
 
-      {/* 입력 영역 - 공간이 넓어진 만큼 내부 패딩 복구 */}
+      {/* 입력 영역 */}
       <div className="flex-grow flex flex-col mb-6 min-h-[360px]">
         {mode === "file" ? (
           <div
             onClick={openPicker}
-            className="relative flex-1 border-2 border-dashed border-blue-200 bg-slate-50 rounded-lg flex flex-col items-center justify-center text-center cursor-pointer transition hover:border-blue-400 overflow-hidden"
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+            className={`relative flex-1 border-2 border-dashed rounded-lg flex flex-col items-center justify-center text-center cursor-pointer transition-all overflow-hidden ${
+              isDragging 
+                ? "border-blue-500 bg-blue-50 scale-[0.99]" 
+                : "border-blue-200 bg-slate-50 hover:border-blue-400"
+            }`}
           >
             {previewUrl ? (
               fileType === "video" ? (
@@ -132,13 +161,13 @@ export default function UploadCard({
                 />
               )
             ) : (
-              <div className="px-4">
-                <div className="text-4xl mb-4">📁</div>
+              <div className="px-4 pointer-events-none">
+                <div className="text-4xl mb-4">{isDragging ? "📥" : "📁"}</div>
                 <div className="font-bold text-slate-700 text-lg">
-                  상대의 사진/영상을 올려주세요
+                  {isDragging ? "여기에 놓아주세요" : "상대의 사진/영상을 올려주세요"}
                 </div>
                 <div className="text-sm text-slate-500 mt-2 font-medium">
-                  클릭해서 파일 선택
+                  {isDragging ? "파일을 감지했습니다" : "드래그하거나 클릭해서 파일 선택"}
                 </div>
               </div>
             )}

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=26&pause=1000&color=6366F1&center=true&vCenter=true&width=800&lines=Can+you+trust+what+you+see%3F;DBDBDEEP+—+Real-time+Deepfake+Detector;Pixel+%2B+Frequency+Dual+Detection+Engine" alt="Typing SVG" />
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=26&pause=1000&color=6366F1&center=true&vCenter=true&width=800&lines=Can+you+trust+what+you+see%3F;DBDBDEEP+%E2%80%94+Real-time+Deepfake+Detector;Pixel+%2B+Frequency+Dual+Detection+Engine" alt="Typing SVG" />
 </p>
 
 <h1 align="center">🕵️ DBDBDEEP — Multimodal Deepfake Detector</h1>

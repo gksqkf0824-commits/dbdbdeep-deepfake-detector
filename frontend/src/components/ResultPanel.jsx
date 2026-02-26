@@ -158,16 +158,15 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
     if (isUndetermined) return { text: "추론 실패", color: "text-red-600", bg: "bg-red-50", padding: "px-10" };
     const pReal = trust !== null ? trust / 100 : null;
     if (pReal !== null && pReal < 0.335) return { text: "FAKE", color: "text-red-600", bg: "bg-red-50", padding: "px-10" };
-    // WARNING일 때만 글자수가 많으므로 px-6으로 패딩을 줄여 전체 박스 크기를 맞춤
     if (pReal !== null && pReal < 0.52) return { text: "WARNING", color: "text-amber-600", bg: "bg-amber-50", padding: "px-6" };
     if (pReal !== null) return { text: "REAL", color: "text-emerald-600", bg: "bg-emerald-50", padding: "px-10" };
     return { text: "판독 완료", color: "text-blue-600", bg: "bg-blue-50", padding: "px-10" };
   })();
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-8 flex-grow flex flex-col h-full">
-      {/* Top Section - 추론 전 배치(이미지 좌측)로 통일 */}
-      <div className="flex justify-between items-start flex-shrink-0 mb-12">
+    <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-8 flex-grow flex flex-col h-full min-h-full">
+      {/* Top Section */}
+      <div className="flex justify-between items-start flex-shrink-0 mb-8">
         <div className="flex items-center gap-8">
           <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-3xl bg-slate-50 border border-gray-200 flex-shrink-0 overflow-hidden flex items-center justify-center shadow-md">
             {isVideo ? (
@@ -195,7 +194,6 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
           </div>
         </div>
         
-        {/* 수정 포인트: 배지 종류에 따라 dynamic padding 적용 */}
         <div className="text-right">
           <span className={`inline-block py-5 rounded-2xl text-2xl font-black shadow-sm ${badge.padding} ${badge.color} ${badge.bg}`}>
             {badge.text}
@@ -203,9 +201,9 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
         </div>
       </div>
 
-      {/* Progress & Analysis Charts */}
-      <div className="mt-auto flex flex-col">
-        <div className="mb-10">
+      {/* Main Analysis Content - flex-1과 justify-between을 사용하여 가변적인 코멘트 길이에 대응 */}
+      <div className="flex-1 flex flex-col justify-between">
+        <div className="mb-8">
           <div className="flex justify-between text-base text-slate-500 font-medium mb-3">
             <span>분석 진행률</span>
             <span>{Math.floor(progress)}%</span>
@@ -215,9 +213,9 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
           </div>
         </div>
 
-        <div className="flex flex-col flex-1">
+        <div className="flex-1 flex flex-col">
           {result && isUndetermined ? (    
-            <div className="flex flex-1 items-center">
+            <div className="flex flex-1 items-center justify-center">
               <div className="w-full border border-red-200 rounded-lg px-6 py-14 bg-red-50/40 shadow-sm flex items-center justify-center text-center">
                 <div className="text-red-600 font-semibold text-lg">
                   얼굴 미탐지로 인해 추론이 실패했습니다
@@ -225,17 +223,17 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
               </div>
             </div>
           ) : isVideo ? (
-            <div className="border border-gray-200 rounded-lg p-6 bg-white shadow-sm">
-              <div className="font-semibold text-slate-800 mb-5 text-base">타임라인 정밀 분석</div>
-              <div className="h-[280px] w-full">
+            <div className="flex-1 border border-gray-200 rounded-lg p-6 bg-white shadow-sm flex flex-col">
+              <div className="font-semibold text-slate-800 mb-5 text-base flex-shrink-0">타임라인 정밀 분석</div>
+              <div className="flex-1 min-h-[280px] w-full">
                 {result && hasTimelineData ? <VideoTimelineChart data={timeline} /> : <VideoTimelinePlaceholder />}
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-8">
-              <div className="border border-gray-200 rounded-xl p-8 bg-white flex flex-col items-center shadow-sm">
-                <div className="font-semibold text-slate-800 w-full mb-6 text-lg font-sans">주파수 분석 (Frequency)</div>
-                <div className="w-full flex-grow flex items-center justify-center min-h-[250px]">
+            <div className="grid grid-cols-2 gap-8 flex-1">
+              <div className="border border-gray-200 rounded-xl p-8 bg-white flex flex-col items-center shadow-sm h-full">
+                <div className="font-semibold text-slate-800 w-full mb-6 text-lg font-sans flex-shrink-0">주파수 분석 (Frequency)</div>
+                <div className="w-full flex-1 flex items-center justify-center min-h-[250px]">
                   {result ? (
                     isUndetermined ? <ScoreDonutChart score={100} color="#ef4444" cross /> : <ScoreDonutChart score={freqScore} color="#6366f1" />
                   ) : (
@@ -245,9 +243,9 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
                   )}
                 </div>
               </div>
-              <div className="border border-gray-200 rounded-xl p-8 bg-white flex flex-col items-center shadow-sm">
-                <div className="font-semibold text-slate-800 w-full mb-6 text-lg font-sans">픽셀 분석 (Pixel-level)</div>
-                <div className="w-full flex-grow flex items-center justify-center min-h-[250px]">
+              <div className="border border-gray-200 rounded-xl p-8 bg-white flex flex-col items-center shadow-sm h-full">
+                <div className="font-semibold text-slate-800 w-full mb-6 text-lg font-sans flex-shrink-0">픽셀 분석 (Pixel-level)</div>
+                <div className="w-full flex-1 flex items-center justify-center min-h-[250px]">
                   {result ? (
                     isUndetermined ? <ScoreDonutChart score={100} color="#ef4444" cross /> : <ScoreDonutChart score={pixelScore} color="#3b82f6" />
                   ) : (

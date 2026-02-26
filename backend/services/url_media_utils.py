@@ -82,12 +82,13 @@ def _env_csv(name: str, default: str) -> List[str]:
 
 URL_MEDIA_MAX_MB = _env_int("URL_MEDIA_MAX_MB", 120, 1)
 URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
-YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
+YTDLP_YOUTUBE_COOKIEFILE = (os.getenv("YTDLP_YOUTUBE_COOKIEFILE") or "").strip()
+YTDLP_INSTAGRAM_COOKIEFILE = (os.getenv("YTDLP_INSTAGRAM_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web")
 YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web_safari")
 YTDLP_YOUTUBE_FORMATS = _env_csv("YTDLP_YOUTUBE_FORMATS", "incomplete")
 YTDLP_YOUTUBE_PLAYER_SKIP = _env_csv("YTDLP_YOUTUBE_PLAYER_SKIP", "")
-YTDLP_YOUTUBE_VISITOR_DATA = (os.getenv("YTDLP_YOUTUBE_VISITOR_DATA") or "").strip()
+YTDLP_YOUTUBE_VISITOR_DATA = unquote((os.getenv("YTDLP_YOUTUBE_VISITOR_DATA") or "").strip())
 YTDLP_YOUTUBE_PO_TOKEN = (os.getenv("YTDLP_YOUTUBE_PO_TOKEN") or "").strip()
 PYTUBEFIX_YOUTUBE_CLIENTS = _env_csv("PYTUBEFIX_YOUTUBE_CLIENTS", "WEB,ANDROID,IOS,MWEB")
 PYTUBEFIX_USE_PO_TOKEN = _env_bool("PYTUBEFIX_USE_PO_TOKEN", True)
@@ -790,16 +791,35 @@ def _build_cli_js_runtimes_value() -> str:
     return f"node:{detected}" if detected else "node"
 
 
-def _prepare_writable_cookiefile(tmp_dir: str, strict: bool = False) -> str:
-    if not YTDLP_COOKIEFILE:
+def _resolve_cookiefile_for_source(source_group: str = "generic") -> str:
+    group = str(source_group or "generic").strip().lower()
+    if group == "youtube":
+        return YTDLP_YOUTUBE_COOKIEFILE
+    if group == "instagram":
+        return YTDLP_INSTAGRAM_COOKIEFILE
+    return ""
+
+
+def _cookiefile_env_hint(source_group: str = "generic") -> str:
+    group = str(source_group or "generic").strip().lower()
+    if group == "youtube":
+        return "YTDLP_YOUTUBE_COOKIEFILE"
+    if group == "instagram":
+        return "YTDLP_INSTAGRAM_COOKIEFILE"
+    return "cookiefile"
+
+
+def _prepare_writable_cookiefile(tmp_dir: str, strict: bool = False, source_group: str = "youtube") -> str:
+    cookie_path = _resolve_cookiefile_for_source(source_group)
+    if not cookie_path:
         return ""
-    if not os.path.isfile(YTDLP_COOKIEFILE):
+    if not os.path.isfile(cookie_path):
         if strict:
-            raise ValueError(f"YTDLP_COOKIEFILE 파일을 찾을 수 없습니다: {YTDLP_COOKIEFILE}")
+            raise ValueError(f"{_cookiefile_env_hint(source_group)} 파일을 찾을 수 없습니다: {cookie_path}")
         return ""
 
     dst = os.path.join(tmp_dir, "yt_cli_cookies.txt")
-    shutil.copyfile(YTDLP_COOKIEFILE, dst)
+    shutil.copyfile(cookie_path, dst)
     return dst
 
 
@@ -878,13 +898,15 @@ def _youtube_cli_extractor_args_string(player_clients: Optional[List[str]] = Non
 
 
 def _youtube_cli_extractor_args_candidates() -> List[str]:
+    # 첫 시도는 extractor-args를 비워서(=실사용 CLI 명령과 동일) YouTube 기본 추출을 우선한다.
+    candidates: List[str] = [""]
+    seen: set[str] = {""}
+
     profiles = _youtube_client_profiles()
     merged_clients = _merge_unique_tokens(*profiles)
     if merged_clients:
         profiles = [profiles[0]] + profiles[1:] + [merged_clients]
 
-    candidates: List[str] = []
-    seen: set[str] = set()
     for profile in profiles:
         for include_optional in (True, False):
             arg = _youtube_cli_extractor_args_string(player_clients=profile, include_optional=include_optional)
@@ -905,6 +927,7 @@ def _youtube_cli_extractor_args_candidates() -> List[str]:
 def _youtube_cli_format_candidates(has_ffmpeg: bool) -> List[Optional[str]]:
     if has_ffmpeg:
         return [
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "bv*+ba/b",
             "bestvideo*+bestaudio/bestvideo+bestaudio/best",
             "best",
@@ -967,8 +990,8 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
     extractor_args_candidates = _youtube_cli_extractor_args_candidates()
     format_candidates = _youtube_cli_format_candidates(has_ffmpeg=has_ffmpeg)
     cookie_candidates: List[str] = []
-    if YTDLP_COOKIEFILE:
-        cookie_candidates.append(_prepare_writable_cookiefile(str(p.parent), strict=True))
+    if _resolve_cookiefile_for_source("youtube"):
+        cookie_candidates.append(_prepare_writable_cookiefile(str(p.parent), strict=True, source_group="youtube"))
     cookie_candidates.append("")
 
     last_error = ""
@@ -982,7 +1005,8 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
                 cmd = list(base_cmd)
                 if cookiefile:
                     cmd += ["--cookies", cookiefile]
-                cmd += ["--extractor-args", extractor_args]
+                if extractor_args:
+                    cmd += ["--extractor-args", extractor_args]
                 if fmt:
                     cmd += ["-f", fmt]
                     if has_ffmpeg:
@@ -1098,6 +1122,10 @@ def _parse_js_runtimes(raw: str) -> Dict[str, Dict[str, str]]:
         item = token.strip()
         if not item:
             continue
+        if item.startswith("/"):
+            # YTDLP_JS_RUNTIMES=/usr/bin/node 같은 값도 허용한다.
+            out["node"] = {"path": item}
+            continue
         if ":" in item:
             name, path = item.split(":", 1)
             name = name.strip()
@@ -1106,7 +1134,11 @@ def _parse_js_runtimes(raw: str) -> Dict[str, Dict[str, str]]:
                 continue
             out[name] = {"path": path} if path else {}
         else:
-            out[item] = {}
+            low = item.lower()
+            if low in {"nodejs"}:
+                out["node"] = {}
+            else:
+                out[item] = {}
     return out
 
 
@@ -1123,18 +1155,19 @@ def _load_yt_dlp_cls():
     return YoutubeDL
 
 
-def _apply_cookiefile_option(opts: Dict[str, Any], tmp_dir: str) -> None:
-    if not YTDLP_COOKIEFILE:
+def _apply_cookiefile_option(opts: Dict[str, Any], tmp_dir: str, source_group: str = "generic") -> None:
+    cookie_path = _resolve_cookiefile_for_source(source_group)
+    if not cookie_path:
         return
 
-    if not os.path.isfile(YTDLP_COOKIEFILE):
-        raise ValueError(f"YTDLP_COOKIEFILE 파일을 찾을 수 없습니다: {YTDLP_COOKIEFILE}")
+    if not os.path.isfile(cookie_path):
+        raise ValueError(f"{_cookiefile_env_hint(source_group)} 파일을 찾을 수 없습니다: {cookie_path}")
 
     req_cookie_path = os.path.join(tmp_dir, "yt_cookies.txt")
     try:
-        shutil.copyfile(YTDLP_COOKIEFILE, req_cookie_path)
+        shutil.copyfile(cookie_path, req_cookie_path)
     except Exception as exc:
-        raise ValueError(f"YTDLP_COOKIEFILE 복사 실패: {exc}") from exc
+        raise ValueError(f"{_cookiefile_env_hint(source_group)} 복사 실패: {exc}") from exc
     opts["cookiefile"] = req_cookie_path
 
 
@@ -1184,13 +1217,23 @@ def _youtube_client_profiles() -> List[List[str]]:
 def _build_youtube_option_variants(base_opts: Dict[str, Any], tmp_dir: str) -> List[Dict[str, Any]]:
     variants: List[Dict[str, Any]] = []
     profiles = _youtube_client_profiles()
+    has_youtube_cookie = bool(_resolve_cookiefile_for_source("youtube"))
 
-    if YTDLP_COOKIEFILE:
+    # yt-dlp CLI 성공 케이스와 맞추기 위해 extractor_args 없는 raw 옵션을 가장 먼저 시도한다.
+    raw_opts = dict(base_opts)
+    if has_youtube_cookie:
+        try:
+            _apply_cookiefile_option(raw_opts, tmp_dir, source_group="youtube")
+        except Exception:
+            pass
+    variants.append(raw_opts)
+
+    if has_youtube_cookie:
         for clients in profiles:
             for include_optional in (True, False):
                 opts = dict(base_opts)
                 try:
-                    _apply_cookiefile_option(opts, tmp_dir)
+                    _apply_cookiefile_option(opts, tmp_dir, source_group="youtube")
                 except Exception:
                     continue
                 _apply_youtube_extractor_option(
@@ -1210,15 +1253,6 @@ def _build_youtube_option_variants(base_opts: Dict[str, Any], tmp_dir: str) -> L
             )
             variants.append(opts)
 
-    # extractor_args를 완전히 제거한 raw 변형도 마지막에 시도
-    raw_opts = dict(base_opts)
-    if YTDLP_COOKIEFILE:
-        try:
-            _apply_cookiefile_option(raw_opts, tmp_dir)
-        except Exception:
-            pass
-    variants.append(raw_opts)
-
     return variants
 
 
@@ -1226,6 +1260,7 @@ def _build_format_candidates(source_group: str, source_url: str) -> List[Optiona
     low = source_url.lower()
     if source_group == "youtube":
         return [
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             None,
             "best/b",
             "best",
@@ -1313,13 +1348,13 @@ def _login_or_rate_limit_detail(source_url: str = "") -> str:
         return (
             "유튜브 접근이 제한되었습니다(봇 확인/로그인 필요). "
             "yt-dlp 경로로 재시도했지만 실패했습니다. "
-            "유효한 YouTube 쿠키를 재발급해 YTDLP_COOKIEFILE로 설정하고, "
+            "유효한 YouTube 쿠키를 재발급해 YTDLP_YOUTUBE_COOKIEFILE로 설정하고, "
             "YTDLP_YOUTUBE_CLIENTS에서 tv_embedded를 제외해 주세요."
         )
     if _is_instagram_url(source_url):
         return (
             "인스타그램 접근이 제한되었습니다(로그인/레이트리밋). "
-            "INSTAGRAM_SESSION_ID 또는 YTDLP_COOKIEFILE 설정을 확인해 주세요."
+            "INSTAGRAM_SESSION_ID 또는 YTDLP_INSTAGRAM_COOKIEFILE 설정을 확인해 주세요."
         )
     return (
         "URL 접근이 제한되었습니다(로그인 또는 레이트리밋). "
@@ -1550,7 +1585,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
             option_variants = _build_youtube_option_variants(base_opts=base_opts, tmp_dir=tmp_dir)
         else:
             opts = dict(base_opts)
-            _apply_cookiefile_option(opts, tmp_dir)
+            _apply_cookiefile_option(opts, tmp_dir, source_group=source_group)
             option_variants = [opts]
 
         info = None

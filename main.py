@@ -1,27 +1,28 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-import secrets
+"""
+main.py — DBDBDEEP FastAPI Backend
+
+Endpoints
+---------
+POST /analyze          Upload an image → run ensemble inference → return result + token
+GET  /get-result/{tok} Retrieve a cached result by token (valid for 1 hour)
+
+Redis is used to cache results so the frontend can poll /get-result
+without re-running the model.
+"""
+
 import json
-import scipy.stats as stats
-import os
+import secrets
 
-from .model import detector  # 모델 로더
-from .redis_client import redis_db  # redis_db 임포트 확인
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-app = FastAPI()
+from model import detector          # DeepfakeDetectorEnsemble instance
+from redis_client import redis_db   # Redis connection
 
-# --- [여기부터 복사] ---
-@app.on_event("startup")
-def check_redis_connection():
-    try:
-        redis_db.ping()
-        print("✅ Redis 연결 성공! (준비 완료)")
-    except Exception as e:
-        print(f"❌ Redis 연결 실패: {e}")
-        print("   👉 Docker가 켜져 있는지, 'docker run -p 6379:6379 -d redis'를 했는지 확인하세요!")
-# --- [여기까지] ---
+app = FastAPI(title="DBDBDEEP API", version="1.0.0")
 
+# ── CORS (allow all origins for dev; tighten in production) ──────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,54 +31,71 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 결과 이미지 저장 경로
+# ── Static files for output images (Grad-CAM, charts, etc.) ──────────────────
+import os
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
-REAL_MEAN = 15.0 
-REAL_STD = 8.0
 
-def calculate_p_value(score):
-    z_score = (score - REAL_MEAN) / REAL_STD
-    p_value = 1 - stats.norm.cdf(z_score)
-    return round(max(p_value, 0.0001), 4)
+# ── Redis connection check on startup ────────────────────────────────────────
+@app.on_event("startup")
+def check_redis():
+    try:
+        redis_db.ping()
+        print("✅ Redis connected.")
+    except Exception as e:
+        print(f"❌ Redis connection failed: {e}")
+        print("   Make sure Redis is running: docker run -p 6379:6379 -d redis")
 
+
+# ── Analyze endpoint ──────────────────────────────────────────────────────────
 @app.post("/analyze")
 async def analyze_frame(file: UploadFile = File(...)):
+    """
+    Upload an image file and receive a deepfake analysis result.
+
+    Returns
+    -------
+    JSON with:
+      result_url   : URL to retrieve the cached result later
+      data         : full analysis result (scores, risk level, etc.)
+    """
     image_bytes = await file.read()
-    
-    # model.py의 detector 호출 (이미지 저장 로직 포함)
+
     try:
-        score, pixel_score, freq_score, pixel_path, freq_path = detector.predict(image_bytes)
+        result = detector.predict(image_bytes)
+    except ValueError as e:
+        # e.g. "No face detected"
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Model Inference Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Inference error: {e}")
 
-    p_val = calculate_p_value(score)
-    
-    analysis_result = {
-        "confidence": score,       # 통합 점수
-        "pixel_score": pixel_score, # ★ 픽셀 모델 점수 추가
-        "freq_score": freq_score,   # ★ 주파수 모델 점수 추가
-        "is_fake": score < 50,
-        "p_value": p_val,
-        "reliability": "매우 높음" if p_val < 0.01 else ("높음" if p_val < 0.05 else "보통"),
-        "pixel_img_path": f"outputs/{pixel_path}", # 경로가 맞는지 확인 (static mount 경로)
-        "freq_img_path": f"outputs/{freq_path}"
+    # result keys: fake_score, real_score, p_image, p_freq, is_fake, risk_level
+    analysis = {
+        "fake_score":  result["fake_score"],   # 0–100 (higher = more fake)
+        "real_score":  result["real_score"],   # 0–100 (higher = more real)
+        "p_image":     result["p_image"],      # raw P(fake) from image model
+        "p_freq":      result["p_freq"],       # raw P(fake) from freq model
+        "is_fake":     result["is_fake"],      # bool
+        "risk_level":  result["risk_level"],   # "Safe" | "Caution" | "Danger"
     }
-    
-    # Redis에 결과 저장 (1시간 후 만료)
-    result_token = secrets.token_urlsafe(16)
-    redis_db.set(f"res:{result_token}", json.dumps(analysis_result), ex=3600)
-    
+
+    # Cache result in Redis for 1 hour
+    token = secrets.token_urlsafe(16)
+    redis_db.set(f"res:{token}", json.dumps(analysis), ex=3600)
+
     return {
-        "result_url": f"http://127.0.0.1:8000/get-result/{result_token}",
-        "data": analysis_result
+        "result_url": f"/get-result/{token}",
+        "data": analysis,
     }
 
+
+# ── Result retrieval endpoint ─────────────────────────────────────────────────
 @app.get("/get-result/{token}")
-async def get_analysis_result(token: str):
-    data = redis_db.get(f"res:{token}") # temp_db 대신 redis_db 사용
+async def get_result(token: str):
+    """Retrieve a previously cached analysis result by token."""
+    data = redis_db.get(f"res:{token}")
     if data is None:
-        raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="Result not found or expired.")
     return json.loads(data)

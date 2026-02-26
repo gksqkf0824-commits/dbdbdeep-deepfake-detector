@@ -107,10 +107,10 @@
  │  │  Model   │ │   Model   │ │
  │  │(RGB 3ch) │ │(SRM+Y 4ch)│ │
  │  └────┬─────┘ └─────┬─────┘ │
- │       └──────┬───────┘       │
- │   Weighted Soft Voting        │
- │   0.37·p_img + 0.63·p_freq   │
- └──────────────┬───────────────┘
+ │       └──────┬───────┘      │
+ │   Weighted Soft Voting      │
+ │   0.37·p_img + 0.63·p_freq  │
+ └──────────────┬──────────────┘
                 │
                 ▼
    Real Score (%) · Risk Level · Grad-CAM
@@ -139,7 +139,7 @@
 ### 4️⃣ Explainable AI 리포트
 - 🔥 **Grad-CAM** 히트맵 — 모델이 주목한 위조 영역 시각화
 - 📊 **Confidence Score** — 0~100 Real/Fake 신뢰 점수
-- ⚠️ **위험 단계** — Safe / Caution / Danger 3단계 분류
+- ⚠️ **위험 단계** — REAL / WARNING / FAKE 3단계 분류 (p_real 기준)
 - 🤖 **LLM 자연어 리포트** — GPT 기반 분석 결과 자동 설명
 
 ### 5️⃣ User Flow
@@ -329,7 +329,13 @@ Grad-CAM 히트맵 (위조 의심 영역 시각화)
  (위조 근거, 신뢰도 설명, 주의 권고)
 ```
 
-- **위험 단계** : Safe (p_fake < 0.3) · Caution (0.3~0.7) · Danger (p_fake ≥ 0.7)
+- **위험 단계** (p_real 기준)
+
+| 단계 | 조건 | Score 범위 |
+|---|---|---|
+| ✅ **REAL** | p_real ≥ 0.520 | Real Score ≥ 52 |
+| ⚠️ **WARNING** | 0.335 ≤ p_real < 0.520 | Real Score 33.5 ~ 51.9 |
+| 🚨 **FAKE** | p_real < 0.335 | Real Score < 33.5 |
 - Grad-CAM으로 모델이 주목한 위조 영역을 히트맵으로 직관적 시각화
 - GPT API 연동으로 탐지 근거를 자연어로 자동 설명
 

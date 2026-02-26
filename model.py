@@ -222,13 +222,17 @@ class DeepfakeDetectorEnsemble:
         fake_score = round(p_fake * 100, 2)
         real_score = round((1 - p_fake) * 100, 2)
 
-        # 3-level risk (based on eval_ensemble thresholds)
-        if p_fake < 0.3:
-            risk = "Safe"
-        elif p_fake < 0.7:
-            risk = "Caution"
+        # 3-level risk based on p_real thresholds (from eval_ensemble calibration)
+        # REAL    : p_real >= 0.520  (p_fake <= 0.480)
+        # WARNING : 0.335 <= p_real < 0.520
+        # FAKE    : p_real < 0.335   (p_fake > 0.665)
+        p_real = 1 - p_fake
+        if p_real >= 0.520:
+            risk = "REAL"
+        elif p_real >= 0.335:
+            risk = "WARNING"
         else:
-            risk = "Danger"
+            risk = "FAKE"
 
         return {
             "fake_score": fake_score,

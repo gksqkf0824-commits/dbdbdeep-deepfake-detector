@@ -157,9 +157,9 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
     if (!result) return { text: "대기", color: "text-slate-400", bg: "bg-slate-100" };
     if (isUndetermined) return { text: "추론 실패", color: "text-red-600", bg: "bg-red-50" };
     const pReal = trust !== null ? trust / 100 : null;
-    if (pReal !== null && pReal < 0.335) return { text: "가짜", color: "text-red-600", bg: "bg-red-50" };
-    if (pReal !== null && pReal < 0.52) return { text: "주의", color: "text-amber-600", bg: "bg-amber-50" };
-    if (pReal !== null) return { text: "진짜", color: "text-emerald-600", bg: "bg-emerald-50" };
+    if (pReal !== null && pReal < 0.335) return { text: "FAKE", color: "text-red-600", bg: "bg-red-50" };
+    if (pReal !== null && pReal < 0.52) return { text: "WARNING", color: "text-amber-600", bg: "bg-amber-50" };
+    if (pReal !== null) return { text: "REAL", color: "text-emerald-600", bg: "bg-emerald-50" };
     return { text: "판독 완료", color: "text-blue-600", bg: "bg-blue-50" };
   })();
 

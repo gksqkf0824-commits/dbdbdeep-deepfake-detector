@@ -19,12 +19,16 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.10 /uv /uvx /bin/
 COPY requirements.txt /w/requirements.txt
 
 RUN python3 -m venv "${VENV_PATH}"
+ARG SOCIAL_DEPS_REFRESH=0
 
 # torch/torchvision (cu118) + requirements 설치를 uv로 일원화
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python "${VENV_PATH}/bin/python" \
       torch torchvision --index-url https://download.pytorch.org/whl/cu118 \
- && uv pip install --python "${VENV_PATH}/bin/python" -r /w/requirements.txt
+ && uv pip install --python "${VENV_PATH}/bin/python" -r /w/requirements.txt \
+ && echo "social_deps_refresh=${SOCIAL_DEPS_REFRESH}" \
+ && uv pip install --python "${VENV_PATH}/bin/python" --upgrade \
+      yt-dlp instaloader pytubefix
 
 
 # -------- 2) runtime stage --------

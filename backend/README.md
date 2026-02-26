@@ -35,7 +35,14 @@ YTDLP_YOUTUBE_CLIENTS=android,web,tv_embedded
 YTDLP_YOUTUBE_ALT_CLIENTS=ios,mweb,web,web_safari
 
 # 선택: YouTube Shorts(pytubefix) client 우선순위
-PYTUBEFIX_YOUTUBE_CLIENTS=ANDROID,WEB,IOS,MWEB
+PYTUBEFIX_YOUTUBE_CLIENTS=WEB,ANDROID,IOS,MWEB
+
+# 선택: pytubefix PO Token 자동 모드(기본 true, node 필요)
+PYTUBEFIX_USE_PO_TOKEN=true
+
+# 선택: pytubefix 수동 PO Token 모드(봇 감지 시 권장)
+PYTUBEFIX_VISITOR_DATA=...
+PYTUBEFIX_PO_TOKEN=...
 ```
 
 Docker Compose 예시:
@@ -48,7 +55,10 @@ services:
       - INSTAGRAM_SESSION_ID=${INSTAGRAM_SESSION_ID}
       - YTDLP_YOUTUBE_CLIENTS=android,web,tv_embedded
       - YTDLP_YOUTUBE_ALT_CLIENTS=ios,mweb,web,web_safari
-      - PYTUBEFIX_YOUTUBE_CLIENTS=${PYTUBEFIX_YOUTUBE_CLIENTS:-ANDROID,WEB,IOS,MWEB}
+      - PYTUBEFIX_YOUTUBE_CLIENTS=${PYTUBEFIX_YOUTUBE_CLIENTS:-WEB,ANDROID,IOS,MWEB}
+      - PYTUBEFIX_USE_PO_TOKEN=${PYTUBEFIX_USE_PO_TOKEN:-true}
+      - PYTUBEFIX_VISITOR_DATA=${PYTUBEFIX_VISITOR_DATA}
+      - PYTUBEFIX_PO_TOKEN=${PYTUBEFIX_PO_TOKEN}
     volumes:
       - /opt/dbdbdeep-dev/secrets/ig_cookies.txt:/run/secrets/ig_cookies.txt:ro
 ```
@@ -57,5 +67,7 @@ services:
 - 쿠키 파일은 저장소에 커밋하지 마세요.
 - YouTube Shorts는 pytubefix로 직접 다운로드하며, 해당 경로에서는 yt-dlp를 사용하지 않습니다.
 - Shorts에서 스트림 추출 실패 시 pytubefix client 순서를 바꿔 재시도할 수 있습니다(`PYTUBEFIX_YOUTUBE_CLIENTS`).
+- Shorts에서 `"detected as a bot"`가 발생하면 `PYTUBEFIX_VISITOR_DATA/PYTUBEFIX_PO_TOKEN`을 설정하세요.
+- PO Token 발급 가이드: https://pytubefix.readthedocs.io/en/latest/user/po_token.html
 - Instagram private/제한 게시물은 세션/쿠키가 없으면 실패할 수 있습니다.
 - Instagram 공개 게시물은 Instaloader 실패 시 OpenGraph/yt-dlp 순서로 자동 폴백합니다.

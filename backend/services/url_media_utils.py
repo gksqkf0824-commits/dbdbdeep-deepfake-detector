@@ -2,8 +2,7 @@
 URL 기반 미디어(이미지/영상) 다운로드 서비스.
 
 지원 분기:
-1) YouTube Shorts URL 동영상 추론(pytubefix)
-2) YouTube 일반 URL 동영상/이미지 추론(yt-dlp)
+1) YouTube URL 동영상/이미지 추론(yt-dlp CLI 우선, pytubefix/yt-dlp API fallback)
 3) Instagram URL 동영상/이미지 추론(Instaloader + OpenGraph + yt-dlp fallback)
 4) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
 """
@@ -14,10 +13,12 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
@@ -51,6 +52,13 @@ def _env_float(name: str, default: float, minimum: float) -> float:
     return max(value, minimum)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "y"}
+
+
 def _env_csv(name: str, default: str) -> List[str]:
     raw = (os.getenv(name, default) or "").strip()
     tokens: List[str] = []
@@ -66,7 +74,10 @@ URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web,tv_embedded")
 YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web,web_safari")
-PYTUBEFIX_YOUTUBE_CLIENTS = _env_csv("PYTUBEFIX_YOUTUBE_CLIENTS", "ANDROID,WEB,IOS,MWEB")
+PYTUBEFIX_YOUTUBE_CLIENTS = _env_csv("PYTUBEFIX_YOUTUBE_CLIENTS", "WEB,ANDROID,IOS,MWEB")
+PYTUBEFIX_USE_PO_TOKEN = _env_bool("PYTUBEFIX_USE_PO_TOKEN", True)
+PYTUBEFIX_VISITOR_DATA = (os.getenv("PYTUBEFIX_VISITOR_DATA") or os.getenv("YOUTUBE_VISITOR_DATA") or "").strip()
+PYTUBEFIX_PO_TOKEN = (os.getenv("PYTUBEFIX_PO_TOKEN") or os.getenv("YOUTUBE_PO_TOKEN") or "").strip()
 
 INSTAGRAM_SESSION_ID = (os.getenv("INSTAGRAM_SESSION_ID") or "").strip()
 INSTAGRAM_USER_AGENT = (os.getenv("INSTAGRAM_USER_AGENT") or _HTTP_USER_AGENT).strip() or _HTTP_USER_AGENT
@@ -201,27 +212,106 @@ def _pytubefix_client_candidates() -> List[str]:
         seen.add(token)
         clients.append(token)
     if not clients:
-        clients = ["ANDROID", "WEB", "IOS", "MWEB"]
+        clients = ["WEB", "ANDROID", "IOS", "MWEB"]
+
+    if PYTUBEFIX_USE_PO_TOKEN:
+        if "WEB" in clients:
+            clients = ["WEB"] + [c for c in clients if c != "WEB"]
+        else:
+            clients.insert(0, "WEB")
     return clients
 
 
+def _has_manual_pytubefix_po_token() -> bool:
+    return bool(PYTUBEFIX_VISITOR_DATA and PYTUBEFIX_PO_TOKEN)
+
+
+def _manual_pytubefix_po_token_verifier(*_args, **_kwargs):
+    return PYTUBEFIX_VISITOR_DATA, PYTUBEFIX_PO_TOKEN
+
+
+def _should_use_legacy_manual_po_token() -> bool:
+    # pytubefix 최신 버전에서 use_po_token/po_token_verifier는 deprecated.
+    # 다만 수동 토큰이 명시된 경우에만 하위호환 경로를 제한적으로 사용한다.
+    return bool(PYTUBEFIX_USE_PO_TOKEN and _has_manual_pytubefix_po_token())
+
+
+def _is_pytubefix_bot_error(message: str) -> bool:
+    low = str(message or "").lower()
+    keywords = [
+        "detected as a bot",
+        "po_token",
+        "proof of origin token",
+        "eof when reading a line",
+        "enter with your visitordata",
+        "use_po_token and po_token_verifier is deprecated",
+    ]
+    return any(keyword in low for keyword in keywords)
+
+
+def _pytubefix_bot_detail(last_error: Optional[Exception] = None) -> str:
+    node_installed = bool(shutil.which("node"))
+    parts = [
+        "YouTube Shorts 접근이 제한되었습니다(pytubefix 봇 감지).",
+        "현재 pytubefix는 자동 PO Token 경로를 권장하며, 수동 입력 프롬프트는 서버에서 동작하지 않습니다.",
+    ]
+    if _should_use_legacy_manual_po_token():
+        parts.append("수동 PO Token 값이 설정되어 있습니다. 값이 만료되었거나 쌍이 맞지 않으면 실패할 수 있습니다.")
+    elif not node_installed:
+        parts.append("서버에 node 실행 파일이 없어 자동 PO Token 생성이 불가능합니다.")
+    else:
+        parts.append("WEB 클라이언트 자동 모드로 시도했지만 실패했습니다. pytubefix 업데이트 또는 수동 토큰 설정을 확인해 주세요.")
+    parts.append("권장 설정: PYTUBEFIX_YOUTUBE_CLIENTS=WEB,ANDROID,IOS,MWEB")
+    parts.append("가이드: https://pytubefix.readthedocs.io/en/latest/user/po_token.html")
+    if last_error is not None:
+        parts.append(f"last_error={last_error}")
+    return " ".join(parts)
+
+
+def _instantiate_pytubefix_with_compatible_kwargs(YouTube, watch_url: str, kwargs: Dict[str, Any]):
+    # pytubefix 버전별 ctor 인자 차이를 흡수한다.
+    working = dict(kwargs)
+    while True:
+        try:
+            return YouTube(watch_url, **working)
+        except TypeError as exc:
+            matched = re.search(r"unexpected keyword argument ['\"]([^'\"]+)['\"]", str(exc))
+            if not matched:
+                raise
+            key = str(matched.group(1) or "").strip()
+            if not key or key not in working:
+                raise
+            working.pop(key, None)
+
+
 def _build_pytubefix_instance(YouTube, watch_url: str, client: str):
-    # pytubefix 버전별 ctor 시그니처 차이를 흡수한다.
-    kwargs: Dict[str, Any] = {}
+    kwargs: Dict[str, Any] = {
+        "client": client,
+        "use_oauth": False,
+        "allow_oauth_cache": False,
+    }
+
+    # 자동 모드에서는 use_po_token 인자를 넘기지 않는다.
+    # (deprecated 경고 + visitorData 입력 프롬프트로 인해 서버에서 EOF 발생 가능)
+    if _should_use_legacy_manual_po_token():
+        kwargs["use_po_token"] = True
+
+    if _should_use_legacy_manual_po_token():
+        # pytubefix 버전에 따라 verifier 콜백 방식 또는 직접 인자 주입 방식이 달라질 수 있다.
+        kwargs["po_token_verifier"] = _manual_pytubefix_po_token_verifier
+        kwargs["visitor_data"] = PYTUBEFIX_VISITOR_DATA
+        kwargs["po_token"] = PYTUBEFIX_PO_TOKEN
     try:
         import inspect
 
         sig = inspect.signature(YouTube)
-        if "client" in sig.parameters:
-            kwargs["client"] = client
-        if "use_oauth" in sig.parameters:
-            kwargs["use_oauth"] = False
-        if "allow_oauth_cache" in sig.parameters:
-            kwargs["allow_oauth_cache"] = False
+        has_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values())
+        if not has_var_kwargs:
+            kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
     except Exception:
-        kwargs["client"] = client
+        pass
 
-    return YouTube(watch_url, **kwargs)
+    return _instantiate_pytubefix_with_compatible_kwargs(YouTube, watch_url=watch_url, kwargs=kwargs)
 
 
 def _first_non_empty_stream(candidates: List[Any]) -> Any:
@@ -318,11 +408,17 @@ def _download_youtube_shorts_via_pytubefix(source_url: str, max_bytes: int) -> D
     last_yt = None
     for client in _pytubefix_client_candidates():
         with tempfile.TemporaryDirectory(prefix=f"yt-shorts-{client.lower()}-") as tmp_dir:
-            try:
-                yt = _build_pytubefix_instance(YouTube, watch_url=watch_url, client=client)
-                last_yt = yt
-            except Exception as exc:
-                last_error = exc
+            yt = None
+            for candidate_url in (watch_url, source_url):
+                try:
+                    yt = _build_pytubefix_instance(YouTube, watch_url=candidate_url, client=client)
+                    last_yt = yt
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    yt = None
+
+            if yt is None:
                 continue
 
             try:
@@ -382,6 +478,9 @@ def _download_youtube_shorts_via_pytubefix(source_url: str, max_bytes: int) -> D
             )
         except Exception as thumb_exc:
             last_error = thumb_exc
+
+    if _is_pytubefix_bot_error(str(last_error or "")):
+        raise ValueError(_pytubefix_bot_detail(last_error))
 
     raise ValueError(f"YouTube Shorts에서 다운로드 가능한 스트림을 찾지 못했습니다. last_error={last_error}")
 
@@ -634,6 +733,106 @@ def _download_direct_media(source_url: str, max_bytes: int) -> DownloadedMedia:
 # yt-dlp helpers (YouTube / Generic)
 # =========================
 
+def _ensure_parent_dir(path_obj: Path) -> None:
+    parent = path_obj.parent
+    if parent and not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int) -> str:
+    """
+    yt-dlp CLI로 YouTube URL을 local_path 위치로 다운로드한다.
+    yt-dlp는 실제 확장자가 달라질 수 있으므로 템플릿으로 받은 뒤 local_path로 통일한다.
+    """
+    p = Path(local_path)
+    _ensure_parent_dir(p)
+    template = str(p.with_suffix("")) + ".%(ext)s"
+
+    has_ffmpeg = bool(shutil.which("ffmpeg"))
+    cmd: List[str] = [
+        "yt-dlp",
+        "--no-playlist",
+        "--no-part",
+        "--js-runtimes",
+        "node",
+        "--remote-components",
+        "ejs:github",
+        "--socket-timeout",
+        str(URL_MEDIA_TIMEOUT_SEC),
+        "--max-filesize",
+        str(max_bytes),
+        "--retries",
+        "2",
+        "--fragment-retries",
+        "2",
+        "--restrict-filenames",
+        "-o",
+        template,
+    ]
+
+    if YTDLP_COOKIEFILE and os.path.isfile(YTDLP_COOKIEFILE):
+        cmd += ["--cookies", YTDLP_COOKIEFILE]
+
+    if has_ffmpeg:
+        cmd += ["-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"]
+        cmd += ["--merge-output-format", "mp4"]
+    else:
+        cmd += ["-f", "best"]
+
+    cmd.append(source_url)
+
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise ValueError(f"yt-dlp CLI 실패: {err or 'unknown error'}")
+
+    candidates = sorted(
+        p.parent.glob(p.stem + ".*"),
+        key=lambda x: x.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise ValueError("yt-dlp CLI 완료 후 출력 파일을 찾지 못했습니다.")
+
+    final_path = candidates[0]
+    if final_path != p:
+        _ensure_parent_dir(p)
+        shutil.move(str(final_path), str(p))
+    return str(p)
+
+
+def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> DownloadedMedia:
+    with tempfile.TemporaryDirectory(prefix="yt-cli-") as tmp_dir:
+        out_path = Path(tmp_dir) / "youtube_media.mp4"
+        file_path = _download_youtube_to_path(source_url, out_path, max_bytes=max_bytes)
+        if not os.path.isfile(file_path):
+            raise ValueError("yt-dlp CLI 다운로드 파일이 없습니다.")
+
+        size = os.path.getsize(file_path)
+        if size <= 0:
+            raise ValueError("다운로드된 미디어 파일이 비어 있습니다.")
+        if size > max_bytes:
+            raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
+
+        with open(file_path, "rb") as fp:
+            content = fp.read()
+
+        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+        media_type = "image" if ext in _IMAGE_EXTS else "video"
+        filename = os.path.basename(file_path)
+        return DownloadedMedia(
+            source_url=source_url,
+            media_type=media_type,
+            filename=filename,
+            content=content,
+            extractor="youtube_ytdlp_cli",
+            title="",
+        )
+
 def _parse_js_runtimes(raw: str) -> Dict[str, Dict[str, str]]:
     """
     yt-dlp 신버전은 js_runtimes를 {runtime: {config}} 형태(dict)로 기대한다.
@@ -824,6 +1023,9 @@ def _is_login_or_rate_limit_error(message: str) -> bool:
         "confirm you're not a bot",
         "please sign in",
         "not a bot",
+        "detected as a bot",
+        "po_token",
+        "proof of origin token",
         "private account",
         "private video",
         "login to view",
@@ -849,6 +1051,8 @@ def _is_ffmpeg_merge_error(message: str) -> bool:
 
 def _login_or_rate_limit_detail(source_url: str = "") -> str:
     if _is_youtube_url(source_url):
+        if _is_youtube_shorts_url(source_url):
+            return _pytubefix_bot_detail()
         return (
             "유튜브 접근이 제한되었습니다(봇 확인/로그인 필요). "
             "공개 접근 프로필로 재시도했지만 실패했습니다. "
@@ -1337,8 +1541,7 @@ def _download_instagram_media(source_url: str, max_bytes: int) -> DownloadedMedi
 def download_media_from_url(source_url: str) -> DownloadedMedia:
     """
     URL 미디어 다운로드 진입점.
-    - YouTube Shorts URL: pytubefix 전용 경로
-    - YouTube 일반 URL: yt-dlp 전용 경로
+    - YouTube URL: yt-dlp CLI 우선 + pytubefix/yt-dlp API fallback
     - Instagram URL: Instaloader 우선 + OpenGraph + yt-dlp fallback 경로
     - 기타 URL: direct-http 우선, 실패 시 yt-dlp generic 경로
     """
@@ -1371,25 +1574,40 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
         )
 
     if _is_youtube_url(validated_url):
+        youtube_errors: List[str] = []
+
+        try:
+            return _download_youtube_with_ytdlp_cli(validated_url, max_bytes=max_bytes)
+        except Exception as cli_exc:
+            youtube_errors.append(f"yt-dlp-cli: {cli_exc}")
+
         if _is_youtube_shorts_url(validated_url):
             try:
                 return _download_youtube_shorts_via_pytubefix(validated_url, max_bytes=max_bytes)
             except Exception as shorts_exc:
+                youtube_errors.append(f"pytubefix-shorts: {shorts_exc}")
+                if _is_pytubefix_bot_error(str(shorts_exc)):
+                    raise ValueError(_pytubefix_bot_detail(shorts_exc)) from shorts_exc
                 if _is_login_or_rate_limit_error(str(shorts_exc)):
                     raise ValueError(_login_or_rate_limit_detail(validated_url)) from shorts_exc
-                raise ValueError(f"YouTube Shorts 처리 실패(pytubefix): {shorts_exc}") from shorts_exc
+                raise ValueError(
+                    "YouTube Shorts 처리 실패(yt-dlp CLI + pytubefix). "
+                    + " | ".join(youtube_errors)
+                ) from shorts_exc
 
         try:
             return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")
         except Exception as ytdlp_exc:
+            youtube_errors.append(f"yt-dlp/youtube: {ytdlp_exc}")
             try:
                 return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="generic")
             except Exception as generic_exc:
+                youtube_errors.append(f"yt-dlp/generic: {generic_exc}")
                 if _is_login_or_rate_limit_error(str(ytdlp_exc)) or _is_login_or_rate_limit_error(str(generic_exc)):
                     raise ValueError(_login_or_rate_limit_detail(validated_url)) from generic_exc
                 raise ValueError(
-                    "YouTube URL 처리 실패(yt-dlp youtube + generic fallback). "
-                    f"youtube: {ytdlp_exc}; generic: {generic_exc}"
+                    "YouTube URL 처리 실패(yt-dlp CLI + yt-dlp API + generic fallback). "
+                    + " | ".join(youtube_errors)
                 ) from generic_exc
 
     # 기타 웹사이트: 직링크면 direct, 아니면 yt-dlp generic

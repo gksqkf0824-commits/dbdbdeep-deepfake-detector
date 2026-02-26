@@ -2,7 +2,7 @@
 URL 기반 미디어(이미지/영상) 다운로드 서비스.
 
 지원 분기:
-1) YouTube URL 동영상/이미지 추론(yt-dlp CLI 우선, pytubefix/yt-dlp API fallback)
+1) YouTube URL 동영상/이미지 추론(yt-dlp CLI 우선, yt-dlp API fallback)
 3) Instagram URL 동영상/이미지 추론(Instaloader + OpenGraph + yt-dlp fallback)
 4) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
 """
@@ -1051,11 +1051,9 @@ def _is_ffmpeg_merge_error(message: str) -> bool:
 
 def _login_or_rate_limit_detail(source_url: str = "") -> str:
     if _is_youtube_url(source_url):
-        if _is_youtube_shorts_url(source_url):
-            return _pytubefix_bot_detail()
         return (
             "유튜브 접근이 제한되었습니다(봇 확인/로그인 필요). "
-            "공개 접근 프로필로 재시도했지만 실패했습니다. "
+            "yt-dlp 경로로 재시도했지만 실패했습니다. "
             "유효한 YouTube 쿠키를 재발급해 YTDLP_COOKIEFILE로 설정해 주세요."
         )
     if _is_instagram_url(source_url):
@@ -1541,7 +1539,7 @@ def _download_instagram_media(source_url: str, max_bytes: int) -> DownloadedMedi
 def download_media_from_url(source_url: str) -> DownloadedMedia:
     """
     URL 미디어 다운로드 진입점.
-    - YouTube URL: yt-dlp CLI 우선 + pytubefix/yt-dlp API fallback
+    - YouTube URL: yt-dlp CLI 우선 + yt-dlp API fallback
     - Instagram URL: Instaloader 우선 + OpenGraph + yt-dlp fallback 경로
     - 기타 URL: direct-http 우선, 실패 시 yt-dlp generic 경로
     """
@@ -1580,20 +1578,6 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
             return _download_youtube_with_ytdlp_cli(validated_url, max_bytes=max_bytes)
         except Exception as cli_exc:
             youtube_errors.append(f"yt-dlp-cli: {cli_exc}")
-
-        if _is_youtube_shorts_url(validated_url):
-            try:
-                return _download_youtube_shorts_via_pytubefix(validated_url, max_bytes=max_bytes)
-            except Exception as shorts_exc:
-                youtube_errors.append(f"pytubefix-shorts: {shorts_exc}")
-                if _is_pytubefix_bot_error(str(shorts_exc)):
-                    raise ValueError(_pytubefix_bot_detail(shorts_exc)) from shorts_exc
-                if _is_login_or_rate_limit_error(str(shorts_exc)):
-                    raise ValueError(_login_or_rate_limit_detail(validated_url)) from shorts_exc
-                raise ValueError(
-                    "YouTube Shorts 처리 실패(yt-dlp CLI + pytubefix). "
-                    + " | ".join(youtube_errors)
-                ) from shorts_exc
 
         try:
             return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")

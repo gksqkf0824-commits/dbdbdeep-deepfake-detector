@@ -1,70 +1,129 @@
-# Getting Started with Create React App
+# DBDBDEEP — Frontend
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+React 기반 딥페이크 탐지 웹 프론트엔드입니다.  
+이미지 · 영상 업로드와 SNS URL 입력을 지원하며, Grad-CAM 시각화 · AI 리포트 · 딥페이크 판별 게임을 제공합니다.
 
-## Available Scripts
+---
 
-In the project directory, you can run:
+## 📁 디렉토리 구조
 
-### `npm start`
+```
+frontend/
+├── public/
+│   ├── index.html
+│   ├── favicon.ico
+│   └── og-image.png          # OG 소셜 공유 이미지
+├── src/
+│   ├── pages/
+│   │   ├── Landing.jsx        # 메인 랜딩 페이지
+│   │   ├── Analyze.jsx        # 분석 페이지 (업로드 · 결과 · 리포트)
+│   │   └── GamePage.jsx       # AI와 대결하기 (딥페이크 판별 게임)
+│   ├── components/
+│   │   ├── Header.jsx         # 공통 헤더 · 네비게이션
+│   │   ├── Footer.jsx         # 공통 푸터
+│   │   ├── UploadCard.jsx     # 파일/URL 업로드 UI
+│   │   ├── ResultPanel.jsx    # 분석 결과 · 점수 · 위험 등급 표시
+│   │   ├── ExplainPanel.jsx   # Grad-CAM · AI 리포트 · 근거 패널
+│   │   ├── ServicePR.jsx      # 서비스 소개 섹션
+│   │   └── FAQSection.jsx     # FAQ 섹션
+│   ├── game_image/            # 게임용 real/fake 샘플 이미지 (각 20장)
+│   ├── assets/
+│   │   └── logo.png
+│   ├── App.js                 # 라우터 설정
+│   └── index.js               # React 진입점
+├── nginx.conf                 # NGINX SPA 라우팅 · API 프록시 설정
+├── Dockerfile                 # Node 빌드 → NGINX 서빙 멀티스테이지
+├── package.json
+└── tailwind.config.js
+```
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+---
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## ✨ 주요 기능
 
-### `npm test`
+| 페이지 | 기능 |
+|---|---|
+| **Landing** | 서비스 소개, 특징 카드, FAQ, 분석 페이지로 이동 |
+| **Analyze** | 이미지/영상 업로드 · SNS URL 입력 → 실시간 분석 |
+| | Grad-CAM 히트맵 · Real/Fake 점수 · 위험 등급 표시 |
+| | GPT 기반 AI 설명 리포트 · 공간/주파수 근거 패널 |
+| | 영상 프레임별 신뢰도 타임라인 차트 |
+| **Game** | 랜덤 이미지를 보고 Real/Fake 직접 판별 |
+| | AI 판정과 비교 · 점수 집계 |
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+---
 
-### `npm run build`
+## 🚀 실행 방법
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+### 로컬 개발
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+```bash
+cd frontend
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+# 의존성 설치
+npm install
 
-### `npm run eject`
+# 개발 서버 실행 (기본 포트: 3000)
+npm start
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+백엔드 API 주소 설정 (선택):
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+```bash
+# .env 파일 생성
+echo "REACT_APP_API_BASE=http://localhost:8000" > .env
+npm start
+```
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+> 환경변수 미설정 시 현재 페이지의 `window.location.origin`을 API 기본 주소로 사용합니다.
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+### Docker 빌드
 
-## Learn More
+```bash
+docker build -t dbdbdeep-frontend .
+docker run -p 80:80 dbdbdeep-frontend
+```
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+### 프로덕션 빌드
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+```bash
+npm run build
+# build/ 폴더가 생성됩니다 (NGINX로 서빙)
+```
 
-### Code Splitting
+---
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+## 🌐 NGINX 프록시 구조
 
-### Analyzing the Bundle Size
+```
+Browser → NGINX :80
+    │
+    ├── /*          → /usr/share/nginx/html (React SPA)
+    │
+    └── /api/*      → http://backend:8000   (Docker 내부 백엔드)
+                       proxy_read_timeout: 300s
+                       client_max_body_size: 50MB
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+Docker Compose 네트워크에서 `backend` 서비스명으로 백엔드와 자동 연결됩니다.
 
-### Making a Progressive Web App
+---
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+## ⚙️ 환경변수
 
-### Advanced Configuration
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `REACT_APP_API_BASE` | `window.location.origin` | 백엔드 API 서버 주소 |
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+---
 
-### Deployment
+## 🛠️ 기술 스택
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+| 패키지 | 버전 | 용도 |
+|---|---|---|
+| `react` | ^19 | UI 프레임워크 |
+| `react-router-dom` | ^7 | SPA 라우팅 |
+| `tailwindcss` | ^3 | 유틸리티 CSS |
+| `recharts` | ^3 | 프레임별 신뢰도 차트 |
+| `lucide-react` | ^0.575 | 아이콘 |
+| `nginx` | 1.27-alpine | 프로덕션 정적 파일 서빙 · API 프록시 |

@@ -2,9 +2,10 @@
 URL 기반 미디어(이미지/영상) 다운로드 서비스.
 
 지원 분기:
-1) YouTube URL 동영상/이미지 추론(yt-dlp)
-2) Instagram URL 동영상/이미지 추론(Instaloader + OpenGraph + yt-dlp fallback)
-3) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
+1) YouTube Shorts URL 동영상 추론(pytubefix)
+2) YouTube 일반 URL 동영상/이미지 추론(yt-dlp)
+3) Instagram URL 동영상/이미지 추론(Instaloader + OpenGraph + yt-dlp fallback)
+4) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
 """
 
 import glob
@@ -18,7 +19,7 @@ import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "bmp", "gif"}
 _VIDEO_EXTS = {"mp4", "mov", "avi", "mkv", "webm", "m4v", "3gp", "ts"}
@@ -126,9 +127,135 @@ def _is_youtube_url(source_url: str) -> bool:
     )
 
 
+def _is_youtube_shorts_url(source_url: str) -> bool:
+    if not _is_youtube_url(source_url):
+        return False
+    path = (urlparse(source_url).path or "").lower()
+    return path.startswith("/shorts/")
+
+
 def _is_instagram_url(source_url: str) -> bool:
     host = _host_from_url(source_url)
     return _host_matches(host, "instagram.com")
+
+
+_YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _sanitize_youtube_video_id(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    value = value.split("?")[0].split("&")[0].strip("/")
+    return value if _YOUTUBE_VIDEO_ID_RE.match(value) else ""
+
+
+def _extract_youtube_video_id(source_url: str) -> str:
+    parsed = urlparse(source_url)
+    host = _host_from_url(source_url)
+    path_parts = [p for p in (parsed.path or "").split("/") if p]
+
+    if _host_matches(host, "youtu.be"):
+        if path_parts:
+            return _sanitize_youtube_video_id(path_parts[0])
+        return ""
+
+    if not (_host_matches(host, "youtube.com") or _host_matches(host, "youtube-nocookie.com")):
+        return ""
+
+    if path_parts:
+        head = path_parts[0].lower()
+        if head == "shorts" and len(path_parts) >= 2:
+            return _sanitize_youtube_video_id(path_parts[1])
+        if head == "watch":
+            query_v = parse_qs(parsed.query or "").get("v", [])
+            if query_v:
+                return _sanitize_youtube_video_id(query_v[0])
+        if head in {"embed", "live", "v"} and len(path_parts) >= 2:
+            return _sanitize_youtube_video_id(path_parts[1])
+
+    query_v = parse_qs(parsed.query or "").get("v", [])
+    if query_v:
+        return _sanitize_youtube_video_id(query_v[0])
+    return ""
+
+
+def _load_pytubefix_youtube_cls():
+    try:
+        from pytubefix import YouTube
+    except Exception as exc:
+        raise RuntimeError(
+            "pytubefix가 설치되어 있지 않습니다. `pip install -r backend/requirements.txt` 후 서버를 재시작하세요."
+        ) from exc
+    return YouTube
+
+
+def _download_youtube_shorts_via_pytubefix(source_url: str, max_bytes: int) -> DownloadedMedia:
+    video_id = _extract_youtube_video_id(source_url)
+    if not video_id:
+        raise ValueError("YouTube Shorts URL에서 video id를 추출하지 못했습니다.")
+
+    YouTube = _load_pytubefix_youtube_cls()
+    watch_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    with tempfile.TemporaryDirectory(prefix="yt-shorts-") as tmp_dir:
+        try:
+            yt = YouTube(watch_url)
+        except Exception as exc:
+            raise ValueError(f"pytubefix 메타데이터 조회 실패: {exc}") from exc
+
+        stream = None
+        try:
+            stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
+        except Exception:
+            stream = None
+
+        if stream is None:
+            try:
+                stream = yt.streams.get_highest_resolution()
+            except Exception:
+                stream = None
+
+        if stream is None:
+            try:
+                stream = yt.streams.filter(adaptive=True, only_video=True, file_extension="mp4").order_by("resolution").desc().first()
+            except Exception:
+                stream = None
+
+        if stream is None:
+            raise ValueError("YouTube Shorts에서 다운로드 가능한 스트림을 찾지 못했습니다.")
+
+        try:
+            downloaded_path = stream.download(output_path=tmp_dir, filename=f"{video_id}.mp4")
+        except Exception as exc:
+            raise ValueError(f"pytubefix 다운로드 실패: {exc}") from exc
+
+        file_path = str(downloaded_path or "").strip()
+        if not file_path or not os.path.isfile(file_path):
+            file_candidates = sorted(glob.glob(os.path.join(tmp_dir, "*")))
+            file_path = next((p for p in file_candidates if os.path.isfile(p)), "")
+        if not file_path or not os.path.isfile(file_path):
+            raise ValueError("pytubefix 다운로드 파일을 찾지 못했습니다.")
+
+        size = os.path.getsize(file_path)
+        if size <= 0:
+            raise ValueError("다운로드된 미디어 파일이 비어 있습니다.")
+        if size > max_bytes:
+            raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
+
+        with open(file_path, "rb") as fp:
+            content = fp.read()
+
+        title = str(getattr(yt, "title", "") or "").strip()
+        filename = os.path.basename(file_path)
+        return DownloadedMedia(
+            source_url=source_url,
+            media_type="video",
+            filename=filename,
+            content=content,
+            extractor="youtube_shorts_pytubefix",
+            title=title,
+        )
 
 
 def _path_ext_from_url(source_url: str) -> str:
@@ -1082,7 +1209,8 @@ def _download_instagram_media(source_url: str, max_bytes: int) -> DownloadedMedi
 def download_media_from_url(source_url: str) -> DownloadedMedia:
     """
     URL 미디어 다운로드 진입점.
-    - YouTube URL: yt-dlp 전용 경로
+    - YouTube Shorts URL: pytubefix 전용 경로
+    - YouTube 일반 URL: yt-dlp 전용 경로
     - Instagram URL: Instaloader 우선 + OpenGraph + yt-dlp fallback 경로
     - 기타 URL: direct-http 우선, 실패 시 yt-dlp generic 경로
     """
@@ -1115,6 +1243,14 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
         )
 
     if _is_youtube_url(validated_url):
+        if _is_youtube_shorts_url(validated_url):
+            try:
+                return _download_youtube_shorts_via_pytubefix(validated_url, max_bytes=max_bytes)
+            except Exception as shorts_exc:
+                if _is_login_or_rate_limit_error(str(shorts_exc)):
+                    raise ValueError(_login_or_rate_limit_detail(validated_url)) from shorts_exc
+                raise ValueError(f"YouTube Shorts 처리 실패(pytubefix): {shorts_exc}") from shorts_exc
+
         try:
             return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")
         except Exception as ytdlp_exc:

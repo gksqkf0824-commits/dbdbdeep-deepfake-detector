@@ -51,5 +51,6 @@ services:
 
 주의:
 - 쿠키 파일은 저장소에 커밋하지 마세요.
+- YouTube Shorts는 pytubefix로 직접 다운로드하며, 해당 경로에서는 yt-dlp를 사용하지 않습니다.
 - Instagram private/제한 게시물은 세션/쿠키가 없으면 실패할 수 있습니다.
 - Instagram 공개 게시물은 Instaloader 실패 시 OpenGraph/yt-dlp 순서로 자동 폴백합니다.

@@ -53,7 +53,9 @@ VIDEO_FRAMES_PER_MINUTE = 24
 # Aggregation
 AGG_MODE_VIDEO = "mean"
 TOPK = 5
-VIDEO_TRIM_RATIO = 0.10
+VIDEO_TRIM_LOW_RATIO = 0.10
+VIDEO_TRIM_HIGH_RATIO = 0.30
+VIDEO_AGG_MODE_LABEL = "Trimmed Mean (Low 10 Percent, High 30 Percent)"
 
 # Redis TTL
 RESULT_TTL_SEC = 3600
@@ -254,14 +256,14 @@ def _build_video_face_not_detected_result(
         "video_frame_confidences": [],
         "video_frame_pixel_scores": [],
         "video_frame_freq_scores": [],
-        "video_meta": {
-            "sampled_frames": int(sampled_frames),
-            "used_frames": 0,
-            "failed_frames": int(failed_frames),
-            "agg_mode": "Trimmed Mean 10 Percent",
-            "pixel_freq_agg_mode": AGG_MODE_VIDEO,
-            "topk": TOPK,
-        },
+            "video_meta": {
+                "sampled_frames": int(sampled_frames),
+                "used_frames": 0,
+                "failed_frames": int(failed_frames),
+                "agg_mode": VIDEO_AGG_MODE_LABEL,
+                "pixel_freq_agg_mode": AGG_MODE_VIDEO,
+                "topk": TOPK,
+            },
         "ai_comment": "얼굴이 감지되지 않아 추론을 완료하지 못했습니다. 다른 구도/해상도의 영상을 사용해 다시 시도해 주세요.",
         "ai_comment_source": "rule_based",
         "input_media_type": "video",
@@ -594,7 +596,8 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
 
         video_score, trimmed_meta = trimmed_mean_confidence(
             scores,
-            trim_ratio=VIDEO_TRIM_RATIO,
+            low_trim_ratio=VIDEO_TRIM_LOW_RATIO,
+            high_trim_ratio=VIDEO_TRIM_HIGH_RATIO,
         )
         video_pixel = aggregate_scores(pixel_scores, mode=AGG_MODE_VIDEO, topk=TOPK)
         video_freq = aggregate_scores(freq_scores, mode=AGG_MODE_VIDEO, topk=TOPK)
@@ -617,7 +620,7 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
         analysis_result["video_meta"] = {
             "used_frames": len(scores),
             "failed_frames": failed,
-            "agg_mode": "Trimmed Mean 10 Percent",
+            "agg_mode": VIDEO_AGG_MODE_LABEL,
             "pixel_freq_agg_mode": AGG_MODE_VIDEO,
             "topk": TOPK,
         }

@@ -40,15 +40,17 @@ def aggregate_scores(values: List[float], mode: str = "mean", topk: int = 5) -> 
 
 def trimmed_mean_confidence(
     values: List[float],
-    trim_ratio: float = 0.10,
+    low_trim_ratio: float = 0.10,
+    high_trim_ratio: float = 0.30,
 ) -> Tuple[Optional[float], Dict[str, Any]]:
     """
-    상/하위 trim_ratio 비율을 제외한 값들의 평균을 계산.
-    예: trim_ratio=0.10 이면 하위 10%, 상위 10%를 제외.
+    하위 low_trim_ratio 비율과 상위 high_trim_ratio 비율을 제외한 평균을 계산.
+    예: low=0.10, high=0.30 이면 하위 10% + 상위 30%를 제외.
     """
     if not values:
         return None, {
-            "trim_ratio": float(trim_ratio),
+            "trim_low_ratio": float(low_trim_ratio),
+            "trim_high_ratio": float(high_trim_ratio),
             "raw_count": 0,
             "used_count": 0,
             "excluded_low_count": 0,
@@ -58,31 +60,41 @@ def trimmed_mean_confidence(
     arr = np.sort(np.array(values, dtype=np.float32))
     n = len(arr)
 
-    ratio = float(trim_ratio)
-    if ratio < 0:
-        ratio = 0.0
-    if ratio > 0.49:
-        ratio = 0.49
+    low_ratio = float(low_trim_ratio)
+    high_ratio = float(high_trim_ratio)
+    if low_ratio < 0:
+        low_ratio = 0.0
+    if high_ratio < 0:
+        high_ratio = 0.0
+    if low_ratio > 0.99:
+        low_ratio = 0.99
+    if high_ratio > 0.99:
+        high_ratio = 0.99
 
-    trim_count = int(np.floor(n * ratio))
-    max_trim = (n - 1) // 2
-    trim_count = min(trim_count, max_trim)
+    low_trim_count = int(np.floor(n * low_ratio))
+    high_trim_count = int(np.floor(n * high_ratio))
 
-    if trim_count > 0:
-        core = arr[trim_count : n - trim_count]
-    else:
-        core = arr
+    if low_trim_count >= n:
+        low_trim_count = max(0, n - 1)
+    if low_trim_count + high_trim_count >= n:
+        high_trim_count = max(0, (n - 1) - low_trim_count)
+
+    start = low_trim_count
+    end = n - high_trim_count
+    core = arr[start:end]
 
     if core.size == 0:
         core = arr
-        trim_count = 0
+        low_trim_count = 0
+        high_trim_count = 0
 
     return float(np.mean(core)), {
-        "trim_ratio": ratio,
+        "trim_low_ratio": low_ratio,
+        "trim_high_ratio": high_ratio,
         "raw_count": n,
         "used_count": int(core.size),
-        "excluded_low_count": int(trim_count),
-        "excluded_high_count": int(trim_count),
+        "excluded_low_count": int(low_trim_count),
+        "excluded_high_count": int(high_trim_count),
     }
 
 

@@ -154,18 +154,19 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
   })();
 
   const badge = (() => {
-    if (!result) return { text: "대기", color: "text-slate-400", bg: "bg-slate-100" };
-    if (isUndetermined) return { text: "추론 실패", color: "text-red-600", bg: "bg-red-50" };
+    if (!result) return { text: "대기", color: "text-slate-400", bg: "bg-slate-100", padding: "px-10" };
+    if (isUndetermined) return { text: "추론 실패", color: "text-red-600", bg: "bg-red-50", padding: "px-10" };
     const pReal = trust !== null ? trust / 100 : null;
-    if (pReal !== null && pReal < 0.335) return { text: "FAKE", color: "text-red-600", bg: "bg-red-50" };
-    if (pReal !== null && pReal < 0.52) return { text: "WARNING", color: "text-amber-600", bg: "bg-amber-50" };
-    if (pReal !== null) return { text: "REAL", color: "text-emerald-600", bg: "bg-emerald-50" };
-    return { text: "판독 완료", color: "text-blue-600", bg: "bg-blue-50" };
+    if (pReal !== null && pReal < 0.335) return { text: "FAKE", color: "text-red-600", bg: "bg-red-50", padding: "px-10" };
+    // WARNING일 때만 글자수가 많으므로 px-6으로 패딩을 줄여 전체 박스 크기를 맞춤
+    if (pReal !== null && pReal < 0.52) return { text: "WARNING", color: "text-amber-600", bg: "bg-amber-50", padding: "px-6" };
+    if (pReal !== null) return { text: "REAL", color: "text-emerald-600", bg: "bg-emerald-50", padding: "px-10" };
+    return { text: "판독 완료", color: "text-blue-600", bg: "bg-blue-50", padding: "px-10" };
   })();
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-8 flex-grow flex flex-col h-full">
-      {/* Top Section */}
+      {/* Top Section - 추론 전 배치(이미지 좌측)로 통일 */}
       <div className="flex justify-between items-start flex-shrink-0 mb-12">
         <div className="flex items-center gap-8">
           <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-3xl bg-slate-50 border border-gray-200 flex-shrink-0 overflow-hidden flex items-center justify-center shadow-md">
@@ -194,9 +195,9 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
           </div>
         </div>
         
-        {/* 수정 포인트: 배지 박스 및 텍스트 사이즈 대폭 확대 */}
+        {/* 수정 포인트: 배지 종류에 따라 dynamic padding 적용 */}
         <div className="text-right">
-          <span className={`inline-block px-10 py-5 rounded-2xl text-2xl font-black shadow-sm ${badge.color} ${badge.bg}`}>
+          <span className={`inline-block py-5 rounded-2xl text-2xl font-black shadow-sm ${badge.padding} ${badge.color} ${badge.bg}`}>
             {badge.text}
           </span>
         </div>

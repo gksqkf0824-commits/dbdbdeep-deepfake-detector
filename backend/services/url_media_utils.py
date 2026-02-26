@@ -74,6 +74,10 @@ URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web,tv_embedded")
 YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web,web_safari")
+YTDLP_YOUTUBE_FORMATS = _env_csv("YTDLP_YOUTUBE_FORMATS", "incomplete")
+YTDLP_YOUTUBE_PLAYER_SKIP = _env_csv("YTDLP_YOUTUBE_PLAYER_SKIP", "")
+YTDLP_YOUTUBE_VISITOR_DATA = (os.getenv("YTDLP_YOUTUBE_VISITOR_DATA") or "").strip()
+YTDLP_YOUTUBE_PO_TOKEN = (os.getenv("YTDLP_YOUTUBE_PO_TOKEN") or "").strip()
 PYTUBEFIX_YOUTUBE_CLIENTS = _env_csv("PYTUBEFIX_YOUTUBE_CLIENTS", "WEB,ANDROID,IOS,MWEB")
 PYTUBEFIX_USE_PO_TOKEN = _env_bool("PYTUBEFIX_USE_PO_TOKEN", True)
 PYTUBEFIX_VISITOR_DATA = (os.getenv("PYTUBEFIX_VISITOR_DATA") or os.getenv("YOUTUBE_VISITOR_DATA") or "").strip()
@@ -786,6 +790,123 @@ def _prepare_writable_cookiefile(tmp_dir: str) -> str:
     return dst
 
 
+def _merge_unique_tokens(*iterables: List[str]) -> List[str]:
+    ordered: List[str] = []
+    seen: set[str] = set()
+    for items in iterables:
+        for raw in items:
+            token = str(raw or "").strip()
+            if not token:
+                continue
+            low = token.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            ordered.append(low)
+    return ordered
+
+
+def _build_youtube_extractor_args_payload(
+    player_clients: Optional[List[str]] = None,
+    include_optional: bool = True,
+) -> Dict[str, List[str]]:
+    clients = [str(c or "").strip().lower() for c in (player_clients or []) if str(c or "").strip()]
+    if not clients:
+        clients = _merge_unique_tokens(YTDLP_YOUTUBE_CLIENTS, YTDLP_YOUTUBE_ALT_CLIENTS)
+    if not clients:
+        clients = ["android", "web", "tv_embedded"]
+
+    payload: Dict[str, List[str]] = {
+        "player_client": clients,
+    }
+
+    if include_optional:
+        if YTDLP_YOUTUBE_FORMATS:
+            payload["formats"] = [str(v).strip().lower() for v in YTDLP_YOUTUBE_FORMATS if str(v).strip()]
+
+        if YTDLP_YOUTUBE_PLAYER_SKIP:
+            payload["player_skip"] = [str(v).strip().lower() for v in YTDLP_YOUTUBE_PLAYER_SKIP if str(v).strip()]
+
+        if YTDLP_YOUTUBE_VISITOR_DATA:
+            payload["visitor_data"] = [YTDLP_YOUTUBE_VISITOR_DATA]
+
+        if YTDLP_YOUTUBE_PO_TOKEN:
+            token = YTDLP_YOUTUBE_PO_TOKEN
+            if "+" in token:
+                payload["po_token"] = [token]
+            else:
+                payload["po_token"] = [f"{clients[0]}+{token}"]
+
+    return payload
+
+
+def _youtube_cli_extractor_args_string(player_clients: Optional[List[str]] = None, include_optional: bool = True) -> str:
+    payload = _build_youtube_extractor_args_payload(
+        player_clients=player_clients,
+        include_optional=include_optional,
+    )
+    parts: List[str] = []
+    for key, values in payload.items():
+        cleaned = [str(v).strip() for v in values if str(v).strip()]
+        if not cleaned:
+            continue
+        parts.append(f"{key}={','.join(cleaned)}")
+    if not parts:
+        return "youtube:player_client=android,web,tv_embedded"
+    return "youtube:" + ";".join(parts)
+
+
+def _youtube_cli_extractor_args_candidates() -> List[str]:
+    profiles = _youtube_client_profiles()
+    merged_clients = _merge_unique_tokens(*profiles)
+    if merged_clients:
+        profiles = [profiles[0]] + profiles[1:] + [merged_clients]
+
+    candidates: List[str] = []
+    seen: set[str] = set()
+    for profile in profiles:
+        for include_optional in (True, False):
+            arg = _youtube_cli_extractor_args_string(player_clients=profile, include_optional=include_optional)
+            if arg in seen:
+                continue
+            seen.add(arg)
+            candidates.append(arg)
+
+    raw_minimal = _youtube_cli_extractor_args_string(
+        player_clients=["android", "web", "tv_embedded"],
+        include_optional=False,
+    )
+    if raw_minimal not in seen:
+        candidates.append(raw_minimal)
+    return candidates
+
+
+def _youtube_cli_format_candidates(has_ffmpeg: bool) -> List[Optional[str]]:
+    if has_ffmpeg:
+        return [
+            "bv*+ba/b",
+            "bestvideo*+bestaudio/bestvideo+bestaudio/best",
+            "best",
+            None,
+        ]
+    return [
+        "best",
+        "b",
+        "b*",
+        None,
+    ]
+
+
+def _clear_download_candidates(base_path: Path) -> None:
+    for candidate in base_path.parent.glob(base_path.stem + ".*"):
+        if not candidate.is_file():
+            continue
+        try:
+            candidate.unlink()
+        except Exception:
+            continue
+
+
 def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int) -> str:
     """
     yt-dlp CLI로 YouTube URL을 local_path 위치로 다운로드한다.
@@ -797,10 +918,11 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
 
     has_ffmpeg = bool(shutil.which("ffmpeg"))
     js_runtimes_value = _build_cli_js_runtimes_value()
-    cmd: List[str] = [
+    base_cmd: List[str] = [
         "yt-dlp",
         "--no-playlist",
         "--no-part",
+        "--check-formats",
         "--js-runtimes",
         js_runtimes_value,
         "--remote-components",
@@ -820,38 +942,50 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
 
     cookiefile = _prepare_writable_cookiefile(str(p.parent))
     if cookiefile:
-        cmd += ["--cookies", cookiefile]
+        base_cmd += ["--cookies", cookiefile]
 
-    if has_ffmpeg:
-        cmd += ["-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"]
-        cmd += ["--merge-output-format", "mp4"]
-    else:
-        cmd += ["-f", "best"]
+    extractor_args_candidates = _youtube_cli_extractor_args_candidates()
+    format_candidates = _youtube_cli_format_candidates(has_ffmpeg=has_ffmpeg)
+    last_error = ""
+    for extractor_args in extractor_args_candidates:
+        for fmt in format_candidates:
+            _clear_download_candidates(p)
 
-    cmd.append(source_url)
+            cmd = list(base_cmd)
+            cmd += ["--extractor-args", extractor_args]
+            if fmt:
+                cmd += ["-f", fmt]
+                if has_ffmpeg:
+                    cmd += ["--merge-output-format", "mp4"]
+            cmd.append(source_url)
 
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()
-        raise ValueError(f"yt-dlp CLI 실패: {err or 'unknown error'}")
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode == 0:
+                candidates = sorted(
+                    p.parent.glob(p.stem + ".*"),
+                    key=lambda x: x.stat().st_mtime,
+                    reverse=True,
+                )
+                if not candidates:
+                    raise ValueError("yt-dlp CLI 완료 후 출력 파일을 찾지 못했습니다.")
 
-    candidates = sorted(
-        p.parent.glob(p.stem + ".*"),
-        key=lambda x: x.stat().st_mtime,
-        reverse=True,
-    )
-    if not candidates:
-        raise ValueError("yt-dlp CLI 완료 후 출력 파일을 찾지 못했습니다.")
+                selected = candidates[0]
+                ext = selected.suffix.lower().lstrip(".")
+                if ext in _IMAGE_EXTS:
+                    last_error = "yt-dlp가 YouTube URL에서 이미지 포맷만 반환했습니다."
+                    continue
 
-    final_path = candidates[0]
-    if final_path != p:
-        _ensure_parent_dir(p)
-        shutil.move(str(final_path), str(p))
-    return str(p)
+                return str(selected)
+
+            last_error = (proc.stderr or proc.stdout or "").strip()
+            if _is_format_unavailable_error(last_error):
+                continue
+
+    raise ValueError(f"yt-dlp CLI 실패: {last_error or 'unknown error'}")
 
 
 def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> DownloadedMedia:
@@ -965,14 +1099,21 @@ def _apply_js_runtime_option(opts: Dict[str, Any]) -> None:
         opts["js_runtimes"] = YTDLP_JS_RUNTIMES
 
 
-def _apply_youtube_extractor_option(opts: Dict[str, Any], player_clients: Optional[List[str]] = None) -> None:
-    clients = [str(c or "").strip() for c in (player_clients or YTDLP_YOUTUBE_CLIENTS) if str(c or "").strip()]
-    if not clients:
-        return
-
+def _apply_youtube_extractor_option(
+    opts: Dict[str, Any],
+    player_clients: Optional[List[str]] = None,
+    include_optional: bool = True,
+) -> None:
     extractor_args = dict(opts.get("extractor_args") or {})
     yt_args = dict(extractor_args.get("youtube") or {})
-    yt_args["player_client"] = clients
+    payload = _build_youtube_extractor_args_payload(
+        player_clients=player_clients,
+        include_optional=include_optional,
+    )
+    for key, values in payload.items():
+        cleaned = [str(v).strip() for v in values if str(v).strip()]
+        if cleaned:
+            yt_args[key] = cleaned
     extractor_args["youtube"] = yt_args
     opts["extractor_args"] = extractor_args
 
@@ -982,7 +1123,7 @@ def _youtube_client_profiles() -> List[List[str]]:
     seen: set[Tuple[str, ...]] = set()
 
     for raw in (YTDLP_YOUTUBE_CLIENTS, YTDLP_YOUTUBE_ALT_CLIENTS):
-        profile = [str(c or "").strip() for c in raw if str(c or "").strip()]
+        profile = [str(c or "").strip().lower() for c in raw if str(c or "").strip()]
         if not profile:
             continue
         key = tuple(profile)
@@ -1002,18 +1143,28 @@ def _build_youtube_option_variants(base_opts: Dict[str, Any], tmp_dir: str) -> L
 
     if YTDLP_COOKIEFILE:
         for clients in profiles:
-            opts = dict(base_opts)
-            try:
-                _apply_cookiefile_option(opts, tmp_dir)
-            except Exception:
-                continue
-            _apply_youtube_extractor_option(opts, player_clients=clients)
-            variants.append(opts)
+            for include_optional in (True, False):
+                opts = dict(base_opts)
+                try:
+                    _apply_cookiefile_option(opts, tmp_dir)
+                except Exception:
+                    continue
+                _apply_youtube_extractor_option(
+                    opts,
+                    player_clients=clients,
+                    include_optional=include_optional,
+                )
+                variants.append(opts)
 
     for clients in profiles:
-        opts = dict(base_opts)
-        _apply_youtube_extractor_option(opts, player_clients=clients)
-        variants.append(opts)
+        for include_optional in (True, False):
+            opts = dict(base_opts)
+            _apply_youtube_extractor_option(
+                opts,
+                player_clients=clients,
+                include_optional=include_optional,
+            )
+            variants.append(opts)
 
     # extractor_args를 완전히 제거한 raw 변형도 마지막에 시도
     raw_opts = dict(base_opts)
@@ -1032,8 +1183,9 @@ def _build_format_candidates(source_group: str, source_url: str) -> List[Optiona
     if source_group == "youtube":
         return [
             None,
+            "best/b",
             "best",
-            "best[ext=mp4]/best[ext=webm]/best",
+            "best[ext=mp4]/best[ext=webm]/best/b",
             "bv*+ba/b",
             "bestvideo*+bestaudio/bestvideo+bestaudio/best",
         ]
@@ -1073,6 +1225,9 @@ def _is_login_or_rate_limit_error(message: str) -> bool:
         "please sign in",
         "not a bot",
         "detected as a bot",
+        "n challenge solving failed",
+        "only images are available for download",
+        "no supported javascript runtime could be found",
         "po_token",
         "proof of origin token",
         "private account",
@@ -1089,6 +1244,7 @@ def _is_format_unavailable_error(message: str) -> bool:
         "requested format not available",
         "no video formats found",
         "no formats found",
+        "only images are available for download",
     ]
     return any(keyword in low for keyword in keywords)
 
@@ -1321,6 +1477,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
             "noprogress": True,
             "socket_timeout": URL_MEDIA_TIMEOUT_SEC,
             "max_filesize": max_bytes,
+            "check_formats": True,
             "restrictfilenames": True,
             "overwrites": True,
             "skip_download": False,

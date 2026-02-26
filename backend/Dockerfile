@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
  && uv pip install --python "${VENV_PATH}/bin/python" -r /w/requirements.txt \
  && echo "social_deps_refresh=${SOCIAL_DEPS_REFRESH}" \
  && uv pip install --python "${VENV_PATH}/bin/python" --upgrade \
-      yt-dlp instaloader pytubefix
+      "yt-dlp[default]" instaloader pytubefix
 
 
 # -------- 2) runtime stage --------

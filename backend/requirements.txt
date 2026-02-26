@@ -21,6 +21,6 @@ insightface==0.7.3
 onnx==1.15.*
 onnxruntime-gpu==1.17.*
 
-yt-dlp
+yt-dlp[default]
 instaloader
 pytubefix

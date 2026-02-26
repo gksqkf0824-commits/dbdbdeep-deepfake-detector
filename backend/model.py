@@ -297,7 +297,12 @@ class DeepfakeDetectorEnsemble:
             },
         }
 
-    def _predict_from_bgr_core(self, img_bgr: np.ndarray, include_preprocess: bool = False):
+    def _predict_from_bgr_core(
+        self,
+        img_bgr: np.ndarray,
+        include_preprocess: bool = False,
+        pixel_weight: float = 0.37,
+    ):
         # 1) face crop (224,224) in BGR
         face_224_bgr = self._extract_face_crop224_bgr(img_bgr, margin=0.15)
 
@@ -340,8 +345,13 @@ class DeepfakeDetectorEnsemble:
             else:
                 s_p = 50.0
 
-        # 6) 앙상블 (Pixel 0.7 : Freq 0.3)
-        avg_conf = (s_p * 0.37) + (s_f * 0.63)
+        # 6) 앙상블 (Pixel/Freq 가중 평균)
+        w = float(pixel_weight)
+        if w < 0.0:
+            w = 0.0
+        if w > 1.0:
+            w = 1.0
+        avg_conf = (s_p * w) + (s_f * (1.0 - w))
 
         preprocessed_payload = None
         if include_preprocess:
@@ -349,7 +359,12 @@ class DeepfakeDetectorEnsemble:
 
         return round(avg_conf, 2), round(s_p, 2), round(s_f, 2), preprocessed_payload
 
-    def predict_from_bgr(self, img_bgr: np.ndarray, include_preprocess: bool = False):
+    def predict_from_bgr(
+        self,
+        img_bgr: np.ndarray,
+        include_preprocess: bool = False,
+        pixel_weight: float = 0.37,
+    ):
         """
         OpenCV BGR 이미지를 직접 받아 추론한다.
         (비디오 프레임에서 JPEG 재인코딩/디코딩 비용을 제거하기 위한 경로)
@@ -359,15 +374,28 @@ class DeepfakeDetectorEnsemble:
         if img_bgr.ndim != 3 or img_bgr.shape[2] != 3:
             raise ValueError("Expected BGR image with shape (H, W, 3)")
 
-        return self._predict_from_bgr_core(img_bgr, include_preprocess=include_preprocess)
+        return self._predict_from_bgr_core(
+            img_bgr,
+            include_preprocess=include_preprocess,
+            pixel_weight=pixel_weight,
+        )
 
-    def predict(self, image_bytes: bytes, include_preprocess: bool = False):
+    def predict(
+        self,
+        image_bytes: bytes,
+        include_preprocess: bool = False,
+        pixel_weight: float = 0.37,
+    ):
         """
         return:
           avg_conf(real-confidence), pixel_real_conf, freq_real_conf, preprocessed_payload
         """
         img_bgr = self._decode_image_bytes_to_bgr(image_bytes)
-        return self._predict_from_bgr_core(img_bgr, include_preprocess=include_preprocess)
+        return self._predict_from_bgr_core(
+            img_bgr,
+            include_preprocess=include_preprocess,
+            pixel_weight=pixel_weight,
+        )
 
 
 # =========================================================

@@ -30,6 +30,17 @@ _HTTP_USER_AGENT = (
 )
 
 
+class _SilentYTDLPLogger:
+    def debug(self, msg: str) -> None:
+        _ = msg
+
+    def warning(self, msg: str) -> None:
+        _ = msg
+
+    def error(self, msg: str) -> None:
+        _ = msg
+
+
 # =========================
 # ENV helpers
 # =========================
@@ -72,8 +83,8 @@ def _env_csv(name: str, default: str) -> List[str]:
 URL_MEDIA_MAX_MB = _env_int("URL_MEDIA_MAX_MB", 120, 1)
 URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
-YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web,tv_embedded")
-YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web,web_safari")
+YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web")
+YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web_safari")
 YTDLP_YOUTUBE_FORMATS = _env_csv("YTDLP_YOUTUBE_FORMATS", "incomplete")
 YTDLP_YOUTUBE_PLAYER_SKIP = _env_csv("YTDLP_YOUTUBE_PLAYER_SKIP", "")
 YTDLP_YOUTUBE_VISITOR_DATA = (os.getenv("YTDLP_YOUTUBE_VISITOR_DATA") or "").strip()
@@ -779,10 +790,12 @@ def _build_cli_js_runtimes_value() -> str:
     return f"node:{detected}" if detected else "node"
 
 
-def _prepare_writable_cookiefile(tmp_dir: str) -> str:
+def _prepare_writable_cookiefile(tmp_dir: str, strict: bool = False) -> str:
     if not YTDLP_COOKIEFILE:
         return ""
     if not os.path.isfile(YTDLP_COOKIEFILE):
+        if strict:
+            raise ValueError(f"YTDLP_COOKIEFILE 파일을 찾을 수 없습니다: {YTDLP_COOKIEFILE}")
         return ""
 
     dst = os.path.join(tmp_dir, "yt_cli_cookies.txt")
@@ -806,15 +819,23 @@ def _merge_unique_tokens(*iterables: List[str]) -> List[str]:
     return ordered
 
 
+def _normalize_youtube_clients(tokens: List[str]) -> List[str]:
+    # yt-dlp 버전에 따라 tv_embedded가 unsupported로 건너뛰어질 수 있어 기본 경로에서는 제외한다.
+    normalized = _merge_unique_tokens(tokens)
+    return [t for t in normalized if t != "tv_embedded"]
+
+
 def _build_youtube_extractor_args_payload(
     player_clients: Optional[List[str]] = None,
     include_optional: bool = True,
 ) -> Dict[str, List[str]]:
-    clients = [str(c or "").strip().lower() for c in (player_clients or []) if str(c or "").strip()]
+    clients = _normalize_youtube_clients(
+        [str(c or "").strip().lower() for c in (player_clients or []) if str(c or "").strip()]
+    )
     if not clients:
-        clients = _merge_unique_tokens(YTDLP_YOUTUBE_CLIENTS, YTDLP_YOUTUBE_ALT_CLIENTS)
+        clients = _normalize_youtube_clients(_merge_unique_tokens(YTDLP_YOUTUBE_CLIENTS, YTDLP_YOUTUBE_ALT_CLIENTS))
     if not clients:
-        clients = ["android", "web", "tv_embedded"]
+        clients = ["android", "web"]
 
     payload: Dict[str, List[str]] = {
         "player_client": clients,
@@ -852,7 +873,7 @@ def _youtube_cli_extractor_args_string(player_clients: Optional[List[str]] = Non
             continue
         parts.append(f"{key}={','.join(cleaned)}")
     if not parts:
-        return "youtube:player_client=android,web,tv_embedded"
+        return "youtube:player_client=android,web"
     return "youtube:" + ";".join(parts)
 
 
@@ -873,7 +894,7 @@ def _youtube_cli_extractor_args_candidates() -> List[str]:
             candidates.append(arg)
 
     raw_minimal = _youtube_cli_extractor_args_string(
-        player_clients=["android", "web", "tv_embedded"],
+        player_clients=["android", "web"],
         include_optional=False,
     )
     if raw_minimal not in seen:
@@ -923,6 +944,9 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
         "--no-playlist",
         "--no-part",
         "--check-formats",
+        "--quiet",
+        "--no-warnings",
+        "--no-progress",
         "--js-runtimes",
         js_runtimes_value,
         "--remote-components",
@@ -940,51 +964,71 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
         template,
     ]
 
-    cookiefile = _prepare_writable_cookiefile(str(p.parent))
-    if cookiefile:
-        base_cmd += ["--cookies", cookiefile]
-
     extractor_args_candidates = _youtube_cli_extractor_args_candidates()
     format_candidates = _youtube_cli_format_candidates(has_ffmpeg=has_ffmpeg)
+    cookie_candidates: List[str] = []
+    if YTDLP_COOKIEFILE:
+        cookie_candidates.append(_prepare_writable_cookiefile(str(p.parent), strict=True))
+    cookie_candidates.append("")
+
     last_error = ""
-    for extractor_args in extractor_args_candidates:
-        for fmt in format_candidates:
-            _clear_download_candidates(p)
+    saw_login_error = False
+    for cookiefile in cookie_candidates:
+        cookie_specific_login_error = False
+        for extractor_args in extractor_args_candidates:
+            for fmt in format_candidates:
+                _clear_download_candidates(p)
 
-            cmd = list(base_cmd)
-            cmd += ["--extractor-args", extractor_args]
-            if fmt:
-                cmd += ["-f", fmt]
-                if has_ffmpeg:
-                    cmd += ["--merge-output-format", "mp4"]
-            cmd.append(source_url)
+                cmd = list(base_cmd)
+                if cookiefile:
+                    cmd += ["--cookies", cookiefile]
+                cmd += ["--extractor-args", extractor_args]
+                if fmt:
+                    cmd += ["-f", fmt]
+                    if has_ffmpeg:
+                        cmd += ["--merge-output-format", "mp4"]
+                cmd.append(source_url)
 
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode == 0:
-                candidates = sorted(
-                    p.parent.glob(p.stem + ".*"),
-                    key=lambda x: x.stat().st_mtime,
-                    reverse=True,
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
                 )
-                if not candidates:
-                    raise ValueError("yt-dlp CLI 완료 후 출력 파일을 찾지 못했습니다.")
+                if proc.returncode == 0:
+                    candidates = sorted(
+                        p.parent.glob(p.stem + ".*"),
+                        key=lambda x: x.stat().st_mtime,
+                        reverse=True,
+                    )
+                    if not candidates:
+                        raise ValueError("yt-dlp CLI 완료 후 출력 파일을 찾지 못했습니다.")
 
-                selected = candidates[0]
-                ext = selected.suffix.lower().lstrip(".")
-                if ext in _IMAGE_EXTS:
-                    last_error = "yt-dlp가 YouTube URL에서 이미지 포맷만 반환했습니다."
+                    selected = candidates[0]
+                    ext = selected.suffix.lower().lstrip(".")
+                    if ext in _IMAGE_EXTS:
+                        last_error = "yt-dlp가 YouTube URL에서 이미지 포맷만 반환했습니다."
+                        continue
+
+                    return str(selected)
+
+                last_error = (proc.stderr or proc.stdout or "").strip()
+                if _is_login_or_rate_limit_error(last_error):
+                    saw_login_error = True
+                    if cookiefile and _is_cookie_invalid_error(last_error):
+                        cookie_specific_login_error = True
+                    break
+                if _is_format_unavailable_error(last_error):
                     continue
-
-                return str(selected)
-
-            last_error = (proc.stderr or proc.stdout or "").strip()
-            if _is_format_unavailable_error(last_error):
+            if saw_login_error:
+                break
+        if saw_login_error:
+            # 쿠키가 명백히 invalid인 경우에만 "쿠키 없는 경로"를 한 번 더 시도한다.
+            if cookie_specific_login_error and cookiefile:
                 continue
+            break
 
+    if saw_login_error:
+        raise ValueError(_login_or_rate_limit_detail(source_url))
     raise ValueError(f"yt-dlp CLI 실패: {last_error or 'unknown error'}")
 
 
@@ -1123,7 +1167,7 @@ def _youtube_client_profiles() -> List[List[str]]:
     seen: set[Tuple[str, ...]] = set()
 
     for raw in (YTDLP_YOUTUBE_CLIENTS, YTDLP_YOUTUBE_ALT_CLIENTS):
-        profile = [str(c or "").strip().lower() for c in raw if str(c or "").strip()]
+        profile = _normalize_youtube_clients([str(c or "").strip().lower() for c in raw if str(c or "").strip()])
         if not profile:
             continue
         key = tuple(profile)
@@ -1133,7 +1177,7 @@ def _youtube_client_profiles() -> List[List[str]]:
         profiles.append(profile)
 
     if not profiles:
-        profiles.append(["android", "web", "tv_embedded"])
+        profiles.append(["android", "web"])
     return profiles
 
 
@@ -1249,6 +1293,16 @@ def _is_format_unavailable_error(message: str) -> bool:
     return any(keyword in low for keyword in keywords)
 
 
+def _is_cookie_invalid_error(message: str) -> bool:
+    low = str(message or "").lower()
+    keywords = [
+        "provided youtube account cookies are no longer valid",
+        "cookies are no longer valid",
+        "cookie file",
+    ]
+    return any(keyword in low for keyword in keywords)
+
+
 def _is_ffmpeg_merge_error(message: str) -> bool:
     low = str(message or "").lower()
     return "ffmpeg is not installed" in low or "requested merging of multiple formats" in low
@@ -1259,7 +1313,8 @@ def _login_or_rate_limit_detail(source_url: str = "") -> str:
         return (
             "유튜브 접근이 제한되었습니다(봇 확인/로그인 필요). "
             "yt-dlp 경로로 재시도했지만 실패했습니다. "
-            "유효한 YouTube 쿠키를 재발급해 YTDLP_COOKIEFILE로 설정해 주세요."
+            "유효한 YouTube 쿠키를 재발급해 YTDLP_COOKIEFILE로 설정하고, "
+            "YTDLP_YOUTUBE_CLIENTS에서 tv_embedded를 제외해 주세요."
         )
     if _is_instagram_url(source_url):
         return (
@@ -1475,6 +1530,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
             "quiet": True,
             "no_warnings": True,
             "noprogress": True,
+            "logger": _SilentYTDLPLogger(),
             "socket_timeout": URL_MEDIA_TIMEOUT_SEC,
             "max_filesize": max_bytes,
             "check_formats": True,
@@ -1522,10 +1578,12 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
                         saw_login_error = True
                         break
                     raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {exc}") from exc
+            if saw_login_error:
+                break
             if info is not None:
                 break
 
-        if info is None and treat_as_youtube:
+        if info is None and treat_as_youtube and not saw_login_error:
             # format expression이 전부 실패한 경우 메타데이터의 실제 스트림 URL로 한 번 더 시도
             for variant_opts in option_variants:
                 try:
@@ -1784,11 +1842,15 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
             return _download_youtube_with_ytdlp_cli(validated_url, max_bytes=max_bytes)
         except Exception as cli_exc:
             youtube_errors.append(f"yt-dlp-cli: {cli_exc}")
+            if _is_login_or_rate_limit_error(str(cli_exc)):
+                raise ValueError(_login_or_rate_limit_detail(validated_url)) from cli_exc
 
         try:
             return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")
         except Exception as ytdlp_exc:
             youtube_errors.append(f"yt-dlp/youtube: {ytdlp_exc}")
+            if _is_login_or_rate_limit_error(str(ytdlp_exc)):
+                raise ValueError(_login_or_rate_limit_detail(validated_url)) from ytdlp_exc
             try:
                 return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="generic")
             except Exception as generic_exc:

@@ -139,9 +139,19 @@ def _fake_prob_to_real_percent(p_fake: float) -> float:
     return float((1.0 - p) * 100.0)
 
 
-def _model_weighted_confidence(pixel_real: float, freq_real: float) -> float:
+def _normalize_pixel_weight(pixel_weight: float) -> float:
+    w = float(pixel_weight)
+    if w < 0.0:
+        w = 0.0
+    if w > 1.0:
+        w = 1.0
+    return w
+
+
+def _model_weighted_confidence(pixel_real: float, freq_real: float, pixel_weight: float) -> float:
     # model.py의 앙상블 방식과 동일하게 계산한다.
-    return float((float(pixel_real) * 0.21) + (float(freq_real) * 0.79))
+    w = _normalize_pixel_weight(pixel_weight)
+    return float((float(pixel_real) * w) + (float(freq_real) * (1.0 - w)))
 
 
 def _build_source_preview(source_url: str, media_type: str) -> dict:
@@ -302,6 +312,7 @@ def _build_representative_analysis(
     successful_frame_indices: List[int],
     scores: List[float],
     target_score: float,
+    fusion_w: float,
 ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     errors: List[str] = []
 
@@ -348,7 +359,7 @@ def _build_representative_analysis(
                 rgb_model=detector.pixel_model,
                 freq_model=detector.freq_model,
                 cam=rep_cam,
-                fusion_w=0.5,
+                fusion_w=float(_normalize_pixel_weight(fusion_w)),
                 evidence_level="mvp",
             )
         except Exception as exc:
@@ -405,9 +416,12 @@ def analyze_evidence_bytes(
     explain: bool = True,
     evidence_level: str = "mvp",
     fusion_w: float = 0.5,
+    model_pixel_weight: float = 0.37,
 ) -> dict:
     request_id = str(uuid.uuid4())
     lv = _validate_evidence_level(evidence_level)
+    normalized_fusion_w = _normalize_pixel_weight(fusion_w)
+    normalized_model_pixel_weight = _normalize_pixel_weight(model_pixel_weight)
 
     img_arr = np.frombuffer(image_bytes, np.uint8)
     bgr = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
@@ -461,7 +475,7 @@ def analyze_evidence_bytes(
                     rgb_model=rgb_model,
                     freq_model=freq_model,
                     cam=cam,
-                    fusion_w=float(fusion_w),
+                    fusion_w=float(normalized_fusion_w),
                     evidence_level=lv,
                 )
             except Exception as exc:
@@ -517,7 +531,11 @@ def analyze_evidence_bytes(
     # 프론트 종합점수는 model.py 점수 체계(real-confidence)와 동일 값으로 전달한다.
     pixel_real = _fake_prob_to_real_percent(result["score"]["p_rgb"])
     freq_real = _fake_prob_to_real_percent(result["score"]["p_freq"])
-    final_real = _model_weighted_confidence(pixel_real, freq_real)
+    final_real = _model_weighted_confidence(
+        pixel_real,
+        freq_real,
+        pixel_weight=normalized_model_pixel_weight,
+    )
     result["confidence"] = round(float(final_real), 2)
     result["pixel_score"] = round(float(pixel_real), 2)
     result["freq_score"] = round(float(freq_real), 2)
@@ -530,7 +548,8 @@ def analyze_evidence_bytes(
 # Video inference
 # =========================
 
-def analyze_video_bytes(content: bytes, filename: str) -> dict:
+def analyze_video_bytes(content: bytes, filename: str, model_pixel_weight: float = 0.37) -> dict:
+    normalized_model_pixel_weight = _normalize_pixel_weight(model_pixel_weight)
     video_hash = sha256_bytes(content)
     video_cache_key = f"cache:video:{video_hash}"
 
@@ -571,6 +590,7 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
                 score, p_score, f_score, _ = detector.predict_from_bgr(
                     fr,
                     include_preprocess=False,
+                    pixel_weight=normalized_model_pixel_weight,
                 )
                 scores.append(score)
                 pixel_scores.append(p_score)
@@ -634,6 +654,7 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
             successful_frame_indices=successful_frame_indices,
             scores=scores,
             target_score=float(video_score),
+            fusion_w=normalized_model_pixel_weight,
         )
 
         if representative_payload is not None:
@@ -679,6 +700,7 @@ def analyze_url_source(
     explain: bool = True,
     evidence_level: str = "mvp",
     fusion_w: float = 0.5,
+    model_pixel_weight: float = 0.37,
 ) -> dict:
     try:
         downloaded = download_media_from_url(source_url)
@@ -707,6 +729,7 @@ def analyze_url_source(
         result = analyze_video_bytes(
             content=downloaded.content,
             filename=downloaded.filename or "url_video.mp4",
+            model_pixel_weight=model_pixel_weight,
         )
         if isinstance(result, dict):
             result["input_media_type"] = "video"
@@ -726,6 +749,7 @@ def analyze_url_source(
             explain=explain,
             evidence_level=evidence_level,
             fusion_w=fusion_w,
+            model_pixel_weight=model_pixel_weight,
         )
         if isinstance(result, dict):
             result["input_media_type"] = "image"

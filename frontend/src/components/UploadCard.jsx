@@ -72,12 +72,6 @@ export default function UploadCard({
     return defaultComment;
   })();
 
-  const formattedCommentText = (() => {
-    const raw = String(commentText || "").trim();
-    if (!raw) return "";
-    return raw.replace(/\.\s+/g, ".\n");
-  })();
-
   const sourceLabel = (() => {
     const source = String(aiCommentSource || "").trim().toLowerCase();
     if (!source) return "";
@@ -260,8 +254,8 @@ export default function UploadCard({
               <div className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">{sourceLabel}</div>
             )}
           </div>
-          <div className="text-[13px] text-blue-800/80 leading-relaxed font-medium whitespace-pre-line break-words">
-            {formattedCommentText}
+          <div className="text-[13px] text-blue-800/80 leading-relaxed font-medium whitespace-pre-wrap break-words max-h-40 overflow-y-auto pr-1">
+            {commentText}
           </div>
         </div>
       </div>

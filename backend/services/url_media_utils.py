@@ -51,6 +51,13 @@ def _env_float(name: str, default: float, minimum: float) -> float:
     return max(value, minimum)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "y"}
+
+
 def _env_csv(name: str, default: str) -> List[str]:
     raw = (os.getenv(name, default) or "").strip()
     tokens: List[str] = []
@@ -66,7 +73,10 @@ URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web,tv_embedded")
 YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web,web_safari")
-PYTUBEFIX_YOUTUBE_CLIENTS = _env_csv("PYTUBEFIX_YOUTUBE_CLIENTS", "ANDROID,WEB,IOS,MWEB")
+PYTUBEFIX_YOUTUBE_CLIENTS = _env_csv("PYTUBEFIX_YOUTUBE_CLIENTS", "WEB,ANDROID,IOS,MWEB")
+PYTUBEFIX_USE_PO_TOKEN = _env_bool("PYTUBEFIX_USE_PO_TOKEN", True)
+PYTUBEFIX_VISITOR_DATA = (os.getenv("PYTUBEFIX_VISITOR_DATA") or os.getenv("YOUTUBE_VISITOR_DATA") or "").strip()
+PYTUBEFIX_PO_TOKEN = (os.getenv("PYTUBEFIX_PO_TOKEN") or os.getenv("YOUTUBE_PO_TOKEN") or "").strip()
 
 INSTAGRAM_SESSION_ID = (os.getenv("INSTAGRAM_SESSION_ID") or "").strip()
 INSTAGRAM_USER_AGENT = (os.getenv("INSTAGRAM_USER_AGENT") or _HTTP_USER_AGENT).strip() or _HTTP_USER_AGENT
@@ -201,27 +211,93 @@ def _pytubefix_client_candidates() -> List[str]:
         seen.add(token)
         clients.append(token)
     if not clients:
-        clients = ["ANDROID", "WEB", "IOS", "MWEB"]
+        clients = ["WEB", "ANDROID", "IOS", "MWEB"]
+
+    if PYTUBEFIX_USE_PO_TOKEN:
+        if "WEB" in clients:
+            clients = ["WEB"] + [c for c in clients if c != "WEB"]
+        else:
+            clients.insert(0, "WEB")
     return clients
 
 
+def _has_manual_pytubefix_po_token() -> bool:
+    return bool(PYTUBEFIX_VISITOR_DATA and PYTUBEFIX_PO_TOKEN)
+
+
+def _manual_pytubefix_po_token_verifier(*_args, **_kwargs):
+    return PYTUBEFIX_VISITOR_DATA, PYTUBEFIX_PO_TOKEN
+
+
+def _is_pytubefix_bot_error(message: str) -> bool:
+    low = str(message or "").lower()
+    keywords = [
+        "detected as a bot",
+        "po_token",
+        "proof of origin token",
+    ]
+    return any(keyword in low for keyword in keywords)
+
+
+def _pytubefix_bot_detail(last_error: Optional[Exception] = None) -> str:
+    node_installed = bool(shutil.which("node"))
+    parts = [
+        "YouTube Shorts 접근이 제한되었습니다(pytubefix 봇 감지).",
+        "PO Token 설정이 필요합니다.",
+        "PYTUBEFIX_VISITOR_DATA/PYTUBEFIX_PO_TOKEN 환경변수를 설정해 주세요.",
+    ]
+    if not node_installed:
+        parts.append("서버에 node 실행 파일이 없어 자동 PO Token 생성이 불가능합니다.")
+    elif not PYTUBEFIX_USE_PO_TOKEN:
+        parts.append("자동 모드를 쓰려면 PYTUBEFIX_USE_PO_TOKEN=1로 설정해 주세요.")
+    parts.append("가이드: https://pytubefix.readthedocs.io/en/latest/user/po_token.html")
+    if last_error is not None:
+        parts.append(f"last_error={last_error}")
+    return " ".join(parts)
+
+
+def _instantiate_pytubefix_with_compatible_kwargs(YouTube, watch_url: str, kwargs: Dict[str, Any]):
+    # pytubefix 버전별 ctor 인자 차이를 흡수한다.
+    working = dict(kwargs)
+    while True:
+        try:
+            return YouTube(watch_url, **working)
+        except TypeError as exc:
+            matched = re.search(r"unexpected keyword argument ['\"]([^'\"]+)['\"]", str(exc))
+            if not matched:
+                raise
+            key = str(matched.group(1) or "").strip()
+            if not key or key not in working:
+                raise
+            working.pop(key, None)
+
+
 def _build_pytubefix_instance(YouTube, watch_url: str, client: str):
-    # pytubefix 버전별 ctor 시그니처 차이를 흡수한다.
-    kwargs: Dict[str, Any] = {}
+    kwargs: Dict[str, Any] = {
+        "client": client,
+        "use_oauth": False,
+        "allow_oauth_cache": False,
+    }
+
+    if PYTUBEFIX_USE_PO_TOKEN:
+        kwargs["use_po_token"] = True
+
+    if _has_manual_pytubefix_po_token():
+        # pytubefix 버전에 따라 verifier 콜백 방식 또는 직접 인자 주입 방식이 달라질 수 있다.
+        kwargs["po_token_verifier"] = _manual_pytubefix_po_token_verifier
+        kwargs["visitor_data"] = PYTUBEFIX_VISITOR_DATA
+        kwargs["po_token"] = PYTUBEFIX_PO_TOKEN
     try:
         import inspect
 
         sig = inspect.signature(YouTube)
-        if "client" in sig.parameters:
-            kwargs["client"] = client
-        if "use_oauth" in sig.parameters:
-            kwargs["use_oauth"] = False
-        if "allow_oauth_cache" in sig.parameters:
-            kwargs["allow_oauth_cache"] = False
+        has_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values())
+        if not has_var_kwargs:
+            kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
     except Exception:
-        kwargs["client"] = client
+        pass
 
-    return YouTube(watch_url, **kwargs)
+    return _instantiate_pytubefix_with_compatible_kwargs(YouTube, watch_url=watch_url, kwargs=kwargs)
 
 
 def _first_non_empty_stream(candidates: List[Any]) -> Any:
@@ -318,11 +394,17 @@ def _download_youtube_shorts_via_pytubefix(source_url: str, max_bytes: int) -> D
     last_yt = None
     for client in _pytubefix_client_candidates():
         with tempfile.TemporaryDirectory(prefix=f"yt-shorts-{client.lower()}-") as tmp_dir:
-            try:
-                yt = _build_pytubefix_instance(YouTube, watch_url=watch_url, client=client)
-                last_yt = yt
-            except Exception as exc:
-                last_error = exc
+            yt = None
+            for candidate_url in (watch_url, source_url):
+                try:
+                    yt = _build_pytubefix_instance(YouTube, watch_url=candidate_url, client=client)
+                    last_yt = yt
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    yt = None
+
+            if yt is None:
                 continue
 
             try:
@@ -382,6 +464,9 @@ def _download_youtube_shorts_via_pytubefix(source_url: str, max_bytes: int) -> D
             )
         except Exception as thumb_exc:
             last_error = thumb_exc
+
+    if _is_pytubefix_bot_error(str(last_error or "")):
+        raise ValueError(_pytubefix_bot_detail(last_error))
 
     raise ValueError(f"YouTube Shorts에서 다운로드 가능한 스트림을 찾지 못했습니다. last_error={last_error}")
 
@@ -824,6 +909,9 @@ def _is_login_or_rate_limit_error(message: str) -> bool:
         "confirm you're not a bot",
         "please sign in",
         "not a bot",
+        "detected as a bot",
+        "po_token",
+        "proof of origin token",
         "private account",
         "private video",
         "login to view",
@@ -849,6 +937,8 @@ def _is_ffmpeg_merge_error(message: str) -> bool:
 
 def _login_or_rate_limit_detail(source_url: str = "") -> str:
     if _is_youtube_url(source_url):
+        if _is_youtube_shorts_url(source_url):
+            return _pytubefix_bot_detail()
         return (
             "유튜브 접근이 제한되었습니다(봇 확인/로그인 필요). "
             "공개 접근 프로필로 재시도했지만 실패했습니다. "
@@ -1375,6 +1465,8 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
             try:
                 return _download_youtube_shorts_via_pytubefix(validated_url, max_bytes=max_bytes)
             except Exception as shorts_exc:
+                if _is_pytubefix_bot_error(str(shorts_exc)):
+                    raise ValueError(_pytubefix_bot_detail(shorts_exc)) from shorts_exc
                 if _is_login_or_rate_limit_error(str(shorts_exc)):
                     raise ValueError(_login_or_rate_limit_detail(validated_url)) from shorts_exc
                 raise ValueError(f"YouTube Shorts 처리 실패(pytubefix): {shorts_exc}") from shorts_exc

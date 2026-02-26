@@ -9,15 +9,100 @@ const toFiniteNumber = (value) => {
   return Number.isFinite(n) ? n : null;
 };
 
+const toNonNegativeInt = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n);
+};
+
+const toPercentFromRatio = (value) => {
+  const n = toFiniteNumber(value);
+  if (n === null) return null;
+  return n <= 1 ? n * 100 : n;
+};
+
+const parseTrimPercentsFromMode = (mode) => {
+  const raw = String(mode || "");
+  const lowMatch = raw.match(/low\s*([0-9]+(?:\.[0-9]+)?)\s*percent/i);
+  const highMatch = raw.match(/high\s*([0-9]+(?:\.[0-9]+)?)\s*percent/i);
+  return {
+    lowPct: lowMatch ? Number(lowMatch[1]) : null,
+    highPct: highMatch ? Number(highMatch[1]) : null,
+  };
+};
+
 const formatAggModeLabel = (mode) => {
   const raw = String(mode || "").trim();
   if (!raw) return "-";
-  if (raw === "trimmed_mean_10pct") return "Trimmed Mean 10 Percent";
+  if (raw === "trimmed_mean_10pct") return "Trimmed Mean";
+  if (/trimmed/i.test(raw)) return "Trimmed Mean";
+  if (raw === "mean") return "Mean";
+  if (raw === "median") return "Median";
+  if (raw === "topk_mean") return "Top-K Mean";
   return raw
     .split("_")
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+};
+
+const formatFrameCount = (value) => {
+  const n = toNonNegativeInt(value);
+  return n === null ? "-" : `${n} 프레임`;
+};
+
+const formatPercentText = (value) => {
+  if (value === null) return null;
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
+};
+
+const buildAggModeGuide = (videoMeta) => {
+  const rawMode = String(videoMeta?.agg_mode || "").trim();
+  const label = formatAggModeLabel(rawMode);
+  if (!rawMode || label === "-") {
+    return {
+      label: "-",
+      lines: ["집계 방식 정보가 없어 기본 평균 집계로 처리됩니다."],
+    };
+  }
+
+  if (/trimmed/i.test(rawMode)) {
+    const parsed = parseTrimPercentsFromMode(rawMode);
+    const lowPct = toPercentFromRatio(videoMeta?.trim_low_ratio) ?? parsed.lowPct;
+    const highPct = toPercentFromRatio(videoMeta?.trim_high_ratio) ?? parsed.highPct;
+    const rawCount = toNonNegativeInt(videoMeta?.raw_count);
+    const usedCount = toNonNegativeInt(videoMeta?.used_count);
+    const excludedLowCount = toNonNegativeInt(videoMeta?.excluded_low_count);
+    const excludedHighCount = toNonNegativeInt(videoMeta?.excluded_high_count);
+
+    const trimParts = [];
+    if (lowPct !== null) trimParts.push(`하위 ${formatPercentText(lowPct)} 제외`);
+    if (highPct !== null) trimParts.push(`상위 ${formatPercentText(highPct)} 제외`);
+    const trimText = trimParts.length > 0 ? trimParts.join(" · ") : "극단값 일부 제외";
+
+    const lines = [
+      `현재 방식은 ${label}입니다.`,
+      `${trimText} 후 남은 프레임 점수를 평균해 대표 점수를 계산합니다.`,
+    ];
+
+    const detailParts = [];
+    if (rawCount !== null) detailParts.push(`집계 대상 ${rawCount}개`);
+    if (excludedLowCount !== null) detailParts.push(`하위 제외 ${excludedLowCount}개`);
+    if (excludedHighCount !== null) detailParts.push(`상위 제외 ${excludedHighCount}개`);
+    if (usedCount !== null) detailParts.push(`최종 반영 ${usedCount}개`);
+    if (detailParts.length > 0) lines.push(detailParts.join(" · "));
+
+    return { label, lines };
+  }
+
+  return {
+    label,
+    lines: [
+      `현재 방식은 ${label}입니다.`,
+      "분석 프레임 점수를 같은 비중으로 합산해 대표 점수를 계산합니다.",
+    ],
+  };
 };
 
 const VideoTimelinePlaceholder = () => {
@@ -123,6 +208,7 @@ const VideoTimelineChart = ({ data }) => {
 export default function ResultPanel({ progress, result, error, faceImageUrl, fileType = "" }) {
   const pixelScore = toFiniteNumber(result?.pixelScore ?? result?.pixel_score);
   const freqScore = toFiniteNumber(result?.freqScore ?? result?.freq_score);
+  const videoMeta = result?.videoMeta && typeof result.videoMeta === "object" ? result.videoMeta : null;
 
   const timelineRaw = Array.isArray(result?.timeline) ? result.timeline : [];
   const timeline = timelineRaw
@@ -135,8 +221,18 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
     .filter((item) => item.pixel !== null || item.srm !== null || item.final !== null);
 
   const hasTimelineData = timeline.length > 1;
-  const isVideo = fileType === "video" || Boolean(result?.videoMeta);
+  const isVideo = fileType === "video" || Boolean(videoMeta);
   const isUndetermined = Boolean(result?.isUndetermined);
+  const totalSampledFrames = formatFrameCount(videoMeta?.sampled_frames);
+  const analyzedSampledFrames = formatFrameCount(videoMeta?.used_frames);
+  const failedSampledFrames = formatFrameCount(videoMeta?.failed_frames);
+  const aggGuide = buildAggModeGuide(videoMeta);
+  const videoMetaRows = [
+    { key: "sampled", label: "전체 샘플링 프레임", value: totalSampledFrames },
+    { key: "used", label: "분석 샘플링 프레임", value: analyzedSampledFrames },
+    { key: "failed", label: "분석 실패 프레임", value: failedSampledFrames },
+    { key: "agg", label: "방식", value: aggGuide.label || "-" },
+  ];
 
   const trust = (() => {
     if (isUndetermined) return null;
@@ -262,10 +358,38 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
         </div>
       </div>
 
-      {result?.videoMeta && (
-        <div className="mt-8 border border-slate-200 rounded-lg p-4 bg-slate-50 text-xs text-slate-600 grid grid-cols-2 gap-4 flex-shrink-0">
-          <div className="flex gap-2"><span className="font-bold text-slate-400">샘플:</span> {result.videoMeta.sampled_frames ?? "-"} frames</div>
-          <div className="flex gap-2"><span className="font-bold text-slate-400">방식:</span> {formatAggModeLabel(result.videoMeta.agg_mode)}</div>
+      {videoMeta && (
+        <div className="mt-8 border border-slate-200 rounded-lg p-4 bg-slate-50 flex-shrink-0">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {videoMetaRows.map((item) => (
+              <div key={item.key} className="rounded-md border border-slate-200 bg-white px-3 py-2.5">
+                <div className="text-[11px] font-semibold text-slate-500">{item.label}</div>
+                <div className="mt-1 text-sm font-semibold text-slate-800 break-words">{item.value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex justify-end">
+            <div className="relative group">
+              <button
+                type="button"
+                className="text-xs font-medium text-slate-400 hover:text-slate-500 transition-colors"
+              >
+                가이드
+              </button>
+              <div
+                className="absolute right-0 bottom-6 z-20 w-[320px] rounded-lg border border-slate-200 bg-white p-4 shadow-xl opacity-0 invisible transition-all duration-150 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible"
+              >
+                <div className="text-sm font-semibold text-slate-900 mb-2">방식 설명</div>
+                <div className="space-y-2">
+                  {aggGuide.lines.map((line, idx) => (
+                    <div key={`agg-guide-${idx}`} className="text-xs text-slate-600 leading-relaxed">
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

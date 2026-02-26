@@ -186,7 +186,10 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
           <div>
             <div className="font-semibold text-slate-900 mb-2 text-xl">AI 판별 결과</div>
             <div className={`text-6xl sm:text-7xl font-bold tracking-tight ${isUndetermined ? "text-red-600" : "text-blue-600"}`}>
-              {isUndetermined ? "추론 실패" : trust !== null ? `${trust.toFixed(1)}%` : "--%"}
+              <div className={`text-6xl sm:text-7xl font-bold tracking-tight ${isUndetermined ? "text-red-600" : "text-blue-600"}`}>
+              {isUndetermined ? "추론 실패" 
+                : (trust !== null ? `${Number(trust).toFixed(1)}%` : "--%")}
+            </div>
             </div>
             <div className="text-lg text-slate-500 mt-3 font-medium">
               {result ? (isUndetermined ? "얼굴 미탐지" : "분석 완료") : "분석 결과 대기"}

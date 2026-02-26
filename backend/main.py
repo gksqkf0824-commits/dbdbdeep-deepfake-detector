@@ -18,6 +18,8 @@ app = FastAPI()
 # - frequency weight: 1 - MODEL_PIXEL_WEIGHT
 # 직접 수정 포인트: 여기 숫자만 바꾸면 전체 경로에 동일 반영됩니다.
 MODEL_PIXEL_WEIGHT = 0.37
+MODEL_READY = False
+MODEL_STATUS_DETAIL = ""
 
 
 def _assert_models_loaded() -> None:
@@ -39,9 +41,25 @@ def _assert_models_loaded() -> None:
     print(f"✅ 모델 로드 성공! device={device}, pixel=ready, frequency=ready")
 
 
+def _require_model_ready() -> None:
+    if MODEL_READY:
+        return
+    detail = MODEL_STATUS_DETAIL or "모델이 아직 준비되지 않았습니다."
+    raise HTTPException(status_code=503, detail=detail)
+
+
 @app.on_event("startup")
 def check_redis_connection():
-    _assert_models_loaded()
+    global MODEL_READY, MODEL_STATUS_DETAIL
+    try:
+        _assert_models_loaded()
+        MODEL_READY = True
+        MODEL_STATUS_DETAIL = "ready"
+    except Exception as e:
+        MODEL_READY = False
+        MODEL_STATUS_DETAIL = str(e)
+        print(f"❌ 모델 초기화 실패: {e}")
+        print("   👉 서비스는 기동되지만 분석 API는 503을 반환합니다.")
 
     try:
         ping_redis()
@@ -49,8 +67,7 @@ def check_redis_connection():
         print(f"🔧 MODEL_PIXEL_WEIGHT={MODEL_PIXEL_WEIGHT:.2f}, MODEL_FREQ_WEIGHT={(1.0 - MODEL_PIXEL_WEIGHT):.2f}")
     except Exception as e:
         print(f"❌ Redis 연결 실패: {e}")
-        print("   👉 Docker가 켜져 있는지, 'docker run -p 6379:6379 -d redis'를 했는지 확인하세요!")
-        raise
+        print("   👉 Docker가 켜져 있는지, 'docker run -p 6379:6379 -d redis'를 했는지 확인하세요! (서비스는 기동 유지)")
 
 
 app.add_middleware(
@@ -84,6 +101,7 @@ async def analyze_with_evidence(
     explain: bool = Form(True),
     evidence_level: str = Form("mvp"),
 ):
+    _require_model_ready()
     data = await file.read()
     return analyze_evidence_bytes(
         image_bytes=data,
@@ -97,6 +115,7 @@ async def analyze_with_evidence(
 @app.post("/analyze-video")
 @app.post("/api/analyze-video")
 async def analyze_video(file: UploadFile = File(...)):
+    _require_model_ready()
     content = await file.read()
     return analyze_video_bytes(
         content=content,
@@ -113,6 +132,7 @@ async def analyze_url(
     explain: bool = Form(True),
     evidence_level: str = Form("mvp"),
 ):
+    _require_model_ready()
     target_url = (source_url or image_url or "").strip()
     if not target_url:
         raise HTTPException(status_code=400, detail="URL을 입력해 주세요. (source_url 또는 image_url)")

@@ -142,10 +142,22 @@ class RetinaFaceCropper:
         """
         ctx_id = 0 if (device.type == "cuda") else -1
 
-        # providers 직접 지정하고 싶으면 아래처럼:
-        self.app = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider","CPUExecutionProvider"])
-        # self.app = FaceAnalysis(name="buffalo_l")
-        self.app.prepare(ctx_id=0, det_size=det_size)
+        primary_providers = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if ctx_id == 0
+            else ["CPUExecutionProvider"]
+        )
+
+        try:
+            self.app = FaceAnalysis(name="buffalo_l", providers=primary_providers)
+            self.app.prepare(ctx_id=ctx_id, det_size=det_size)
+        except Exception as exc:
+            if ctx_id == 0:
+                print(f"⚠️ RetinaFace CUDA 초기화 실패, CPU로 폴백합니다: {exc}")
+                self.app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
+                self.app.prepare(ctx_id=-1, det_size=det_size)
+            else:
+                raise
 
     def get_largest_face_bbox(self, img_bgr: np.ndarray):
         """

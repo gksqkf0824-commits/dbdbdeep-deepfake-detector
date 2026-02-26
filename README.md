@@ -337,9 +337,57 @@ Grad-CAM 히트맵 (위조 의심 영역 시각화)
 
 ## 🚀 사용 방법
 
-### 학습 (Training)
+### 서버 실행 (추론)
 
-**Image Model**
+모델 가중치(`image.pth`, `freq.pt`)가 Git LFS로 저장소에 포함되어 있습니다.
+
+```bash
+# 1. 저장소 clone (LFS 파일 포함)
+git clone https://github.com/gksqkf0824-commits/dbdbdeep-deepfake-detector.git
+cd dbdbdeep-deepfake-detector
+
+# 2. 의존성 설치
+pip install -r requirments.txt
+
+# 3. Redis 실행 (Docker)
+docker run -p 6379:6379 -d redis
+
+# 4. 서버 실행
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+> **Git LFS 미설치 시** `git lfs install` 후 `git lfs pull` 로 가중치 파일을 받아주세요.
+
+### API 사용 예시
+
+```bash
+# 이미지 분석
+curl -X POST http://localhost:8000/analyze \
+  -F "file=@your_image.jpg"
+
+# 결과 조회 (토큰으로 1시간 내 재조회 가능)
+curl http://localhost:8000/get-result/{token}
+```
+
+**응답 예시**
+```json
+{
+  "data": {
+    "fake_score": 82.4,
+    "real_score": 17.6,
+    "p_image": 0.7801,
+    "p_freq": 0.8512,
+    "is_fake": true,
+    "risk_level": "Danger"
+  }
+}
+```
+
+### 학습 (재현)
+
+<details>
+<summary>Image Model 학습</summary>
+
 ```bash
 python train_image.py \
   --data  /path/to/dataset \
@@ -348,8 +396,11 @@ python train_image.py \
   --batch  128 \
   --lr     8e-5
 ```
+</details>
 
-**Frequency Model**
+<details>
+<summary>Frequency Model 학습</summary>
+
 ```bash
 # Step 1: 이미지 → SRM .npy 전처리 (최초 1회)
 python train_freq.py preprocess \
@@ -363,18 +414,7 @@ python train_freq.py train \
   --epochs 30 \
   --batch  48
 ```
-
-### 서버 실행
-
-```bash
-pip install -r requirments.txt
-
-# 모델 가중치 배치 (같은 디렉터리에 image.pth, freq.pt 위치)
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-> ⚠️ `image.pth` · `freq.pt` 가중치 파일은 용량 문제로 저장소에 포함되지 않습니다.
-> Google Drive / HuggingFace Hub 등에 별도 보관 후 다운로드하여 사용하세요.
+</details>
 
 ---
 

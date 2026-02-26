@@ -485,30 +485,45 @@ python train_freq.py train \
 ## 🛠️ 기술 스택
 
 <p align="center">
+  <!-- Language & Core -->
   <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white"/>
   <img src="https://img.shields.io/badge/PyTorch-EE4C2C?style=flat-square&logo=pytorch&logoColor=white"/>
+  <img src="https://img.shields.io/badge/CUDA_11.8-76B900?style=flat-square&logo=nvidia&logoColor=white"/>
+  <!-- CV / ML -->
   <img src="https://img.shields.io/badge/OpenCV-5C3EE8?style=flat-square&logo=opencv&logoColor=white"/>
   <img src="https://img.shields.io/badge/scikit--learn-F7931E?style=flat-square&logo=scikitlearn&logoColor=white"/>
+  <img src="https://img.shields.io/badge/InsightFace-000000?style=flat-square&logo=github&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Grad--CAM-FF6B6B?style=flat-square&logo=github&logoColor=white"/>
+  <!-- Backend -->
   <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white"/>
-  <img src="https://img.shields.io/badge/React-20232A?style=flat-square&logo=react&logoColor=61DAFB"/>
   <img src="https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white"/>
+  <!-- Frontend -->
+  <img src="https://img.shields.io/badge/React-20232A?style=flat-square&logo=react&logoColor=61DAFB"/>
+  <img src="https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Recharts-FF6B35?style=flat-square&logo=javascript&logoColor=white"/>
+  <!-- Infra -->
   <img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white"/>
   <img src="https://img.shields.io/badge/NGINX-009639?style=flat-square&logo=nginx&logoColor=white"/>
   <img src="https://img.shields.io/badge/AWS_EC2-FF9900?style=flat-square&logo=amazonaws&logoColor=white"/>
   <img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Git_LFS-F64D27?style=flat-square&logo=git&logoColor=white"/>
+  <!-- AI -->
   <img src="https://img.shields.io/badge/OpenAI-412991?style=flat-square&logo=openai&logoColor=white"/>
 </p>
 
 | 분류 | 기술 |
 |---|---|
-| **모델 학습** | PyTorch · timm · scikit-learn |
-| **데이터 전처리** | OpenCV · RetinaFace · InsightFace · NumPy |
-| **시각화** | Matplotlib · Seaborn · Grad-CAM |
-| **개발 환경** | Google Colab Pro+ (A100 GPU) · CUDA |
-| **Backend** | FastAPI · Redis |
-| **Frontend** | React |
-| **배포** | AWS EC2 · Docker · NGINX · GitHub Actions |
-| **AI Report** | OpenAI GPT API |
+| **언어 · 환경** | Python 3 · Google Colab Pro+ (A100 GPU) · CUDA 11.8 |
+| **딥러닝 프레임워크** | PyTorch · torchvision (EfficientNet-V2-S) · AMP (autocast + GradScaler) |
+| **모델 학습** | scikit-learn · scipy · NumPy · tqdm · Label Smoothing · Mixup · OneCycleLR |
+| **컴퓨터 비전** | OpenCV · Pillow · albumentations · scikit-image · SRM 필터 |
+| **얼굴 검출** | InsightFace (RetinaFace, buffalo_l) · ONNX · ONNX Runtime GPU |
+| **설명 가능 AI (XAI)** | pytorch-grad-cam (Grad-CAM) |
+| **Backend** | FastAPI · Uvicorn · Redis · Pydantic · scipy (p-value) · python-multipart |
+| **미디어 처리** | yt-dlp · instaloader · pytubefix · ffmpeg · OpenCV VideoCapture |
+| **Frontend** | React 19 · React Router DOM v7 · Tailwind CSS · Recharts · Lucide React |
+| **배포 · 인프라** | Docker · NGINX · AWS EC2 · GitHub Actions · Git LFS |
+| **AI 리포트** | OpenAI GPT API |
 
 ---
 

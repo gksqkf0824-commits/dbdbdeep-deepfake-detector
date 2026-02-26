@@ -1,13 +1,21 @@
 """
-main.py — DBDBDEEP FastAPI Backend
+main.py — DBDBDEEP Standalone FastAPI Server (Simplified)
+
+This is a minimal, self-contained server for quick local testing.
+For the full production backend (video/URL analysis, Grad-CAM, evidence levels,
+AI comments, multi-face support), use the `backend/` directory.
 
 Endpoints
 ---------
 POST /analyze          Upload an image → run ensemble inference → return result + token
 GET  /get-result/{tok} Retrieve a cached result by token (valid for 1 hour)
 
-Redis is used to cache results so the frontend can poll /get-result
-without re-running the model.
+Usage (local)
+-------------
+  uvicorn main:app --reload
+  # Requires: Redis running locally (docker run -p 6379:6379 -d redis)
+
+For production deployment, see backend/Dockerfile and backend/main.py.
 """
 
 import json

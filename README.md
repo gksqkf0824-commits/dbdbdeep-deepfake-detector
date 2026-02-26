@@ -343,36 +343,85 @@ Grad-CAM 히트맵 (위조 의심 영역 시각화)
 
 ## 🚀 사용 방법
 
-### 서버 실행 (추론)
-
 모델 가중치(`image.pth`, `freq.pt`)가 Git LFS로 저장소에 포함되어 있습니다.
 
 ```bash
-# 1. 저장소 clone (LFS 파일 포함)
+# 저장소 clone (LFS 파일 포함)
 git clone https://github.com/gksqkf0824-commits/dbdbdeep-deepfake-detector.git
 cd dbdbdeep-deepfake-detector
-
-# 2. 의존성 설치
-pip install -r requirments.txt
-
-# 3. Redis 실행 (Docker)
-docker run -p 6379:6379 -d redis
-
-# 4. 서버 실행
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 > **Git LFS 미설치 시** `git lfs install` 후 `git lfs pull` 로 가중치 파일을 받아주세요.
 
-### API 사용 예시
+---
+
+### 🐳 프로덕션 서버 (`backend/` — 영상·URL 분석, Grad-CAM, AI 리포트 포함)
+
+```bash
+# 모델 가중치를 backend/models/ 폴더에 복사
+mkdir -p backend/models
+cp image.pth backend/models/image.pth
+cp freq.pt   backend/models/freq.pt
+
+# Docker Compose로 백엔드 + Redis 실행
+cd backend
+docker compose up --build   # (또는 docker-compose up --build)
+```
+
+> 환경변수로 모델 경로 override:
+> `IMG_MODEL_PATH`, `FREQUENCY_MODEL_PATH`
+
+**API 엔드포인트**
+
+| Method | Path | 설명 |
+|---|---|---|
+| `POST` | `/api/analyze` | 이미지 업로드 → 딥페이크 분석 |
+| `POST` | `/api/analyze-video` | 영상 업로드 → 프레임별 분석 |
+| `POST` | `/api/analyze-url` | SNS/유튜브 URL → 자동 다운로드 후 분석 |
+| `GET`  | `/api/get-result/{token}` | 토큰으로 캐시 결과 조회 (1시간 유효) |
+
+```bash
+# 이미지 분석 예시
+curl -X POST http://localhost:8000/api/analyze \
+  -F "file=@face.jpg" \
+  -F "explain=true" \
+  -F "evidence_level=mvp"
+```
+
+**응답 예시**
+```json
+{
+  "result_url": "http://localhost:8000/get-result/{token}",
+  "data": {
+    "confidence": 18.5,
+    "pixel_score": 22.1,
+    "freq_score": 16.3,
+    "is_fake": true,
+    "ai_comment": "주파수 도메인에서 GAN 특유의 격자 아티팩트가 감지되었습니다.",
+    "faces": [ { "face_id": 0, "assets": { "gradcam_overlay_url": "..." }, "evidence": {...} } ]
+  }
+}
+```
+
+---
+
+### 🖥️ 로컬 단독 실행 (`main.py` — 이미지 단순 분석)
+
+```bash
+# 의존성 설치
+pip install -r requirments.txt
+
+# Redis 실행
+docker run -p 6379:6379 -d redis
+
+# 서버 실행
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
 
 ```bash
 # 이미지 분석
 curl -X POST http://localhost:8000/analyze \
   -F "file=@your_image.jpg"
-
-# 결과 조회 (토큰으로 1시간 내 재조회 가능)
-curl http://localhost:8000/get-result/{token}
 ```
 
 **응답 예시**
@@ -384,7 +433,7 @@ curl http://localhost:8000/get-result/{token}
     "p_image": 0.7801,
     "p_freq": 0.8512,
     "is_fake": true,
-    "risk_level": "Danger"
+    "risk_level": "FAKE"
   }
 }
 ```

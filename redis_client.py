@@ -1,8 +1,9 @@
 """
-redis_client.py — Redis connection singleton
+redis_client.py — Redis connection singleton (Standalone / Local Dev)
 
-Analysis results are cached here for 1 hour after inference,
-so the frontend can retrieve them via /get-result/{token}.
+Used by the root-level main.py for local testing.
+For production (Docker), the service-name default is `redis`.
+See backend/services/redis_client.py for the production version.
 
 Make sure Redis is running before starting the server:
   docker run -p 6379:6379 -d redis

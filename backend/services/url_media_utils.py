@@ -739,6 +739,53 @@ def _ensure_parent_dir(path_obj: Path) -> None:
         parent.mkdir(parents=True, exist_ok=True)
 
 
+def _detect_node_runtime_path() -> str:
+    node_path = shutil.which("node")
+    if node_path:
+        return node_path
+    nodejs_path = shutil.which("nodejs")
+    if nodejs_path:
+        return nodejs_path
+    return ""
+
+
+def _build_cli_js_runtimes_value() -> str:
+    # env 설정(YTDLP_JS_RUNTIMES)이 있으면 우선하고, 기본값은 node/nodejs 자동 탐지로 보완한다.
+    if YTDLP_JS_RUNTIMES:
+        parts: List[str] = []
+        for runtime, cfg in YTDLP_JS_RUNTIMES.items():
+            name = str(runtime or "").strip()
+            if not name:
+                continue
+            path = ""
+            if isinstance(cfg, dict):
+                path = str(cfg.get("path") or "").strip()
+            if path:
+                parts.append(f"{name}:{path}")
+            else:
+                if name == "node":
+                    detected = _detect_node_runtime_path()
+                    parts.append(f"node:{detected}" if detected else "node")
+                else:
+                    parts.append(name)
+        if parts:
+            return ",".join(parts)
+
+    detected = _detect_node_runtime_path()
+    return f"node:{detected}" if detected else "node"
+
+
+def _prepare_writable_cookiefile(tmp_dir: str) -> str:
+    if not YTDLP_COOKIEFILE:
+        return ""
+    if not os.path.isfile(YTDLP_COOKIEFILE):
+        return ""
+
+    dst = os.path.join(tmp_dir, "yt_cli_cookies.txt")
+    shutil.copyfile(YTDLP_COOKIEFILE, dst)
+    return dst
+
+
 def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int) -> str:
     """
     yt-dlp CLI로 YouTube URL을 local_path 위치로 다운로드한다.
@@ -749,12 +796,13 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
     template = str(p.with_suffix("")) + ".%(ext)s"
 
     has_ffmpeg = bool(shutil.which("ffmpeg"))
+    js_runtimes_value = _build_cli_js_runtimes_value()
     cmd: List[str] = [
         "yt-dlp",
         "--no-playlist",
         "--no-part",
         "--js-runtimes",
-        "node",
+        js_runtimes_value,
         "--remote-components",
         "ejs:github",
         "--socket-timeout",
@@ -770,8 +818,9 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
         template,
     ]
 
-    if YTDLP_COOKIEFILE and os.path.isfile(YTDLP_COOKIEFILE):
-        cmd += ["--cookies", YTDLP_COOKIEFILE]
+    cookiefile = _prepare_writable_cookiefile(str(p.parent))
+    if cookiefile:
+        cmd += ["--cookies", cookiefile]
 
     if has_ffmpeg:
         cmd += ["-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"]

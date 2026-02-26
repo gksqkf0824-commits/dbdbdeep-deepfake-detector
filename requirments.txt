@@ -2,3 +2,18 @@ fastapi
 uvicorn
 redis
 python-multipart
+
+# Deep learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Computer vision
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+
+# Data / metrics
+numpy>=1.24.0
+scikit-learn>=1.3.0
+
+# Utilities
+tqdm>=4.65.0

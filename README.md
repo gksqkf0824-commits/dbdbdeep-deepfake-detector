@@ -1,123 +1,425 @@
-# 🕵️‍♂️ DBDBDEEP – Multimodal Deepfake Detector
+<p align="center">
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=26&pause=1000&color=6366F1&center=true&vCenter=true&width=800&lines=Can+you+trust+what+you+see%3F;DBDBDEEP+—+Real-time+Deepfake+Detector;Pixel+%2B+Frequency+Dual+Detection+Engine" alt="Typing SVG" />
+</p>
 
-사진 · 영상 · URL 기반 딥페이크 검증 AI 플랫폼  
-**Upload once, verify instantly.**  
-*"Can you trust what you see?"*
+<h1 align="center">🕵️ DBDBDEEP — Multimodal Deepfake Detector</h1>
 
-멋쟁이사자처럼 AI CV 단기심화 부트캠프 3기  
-**디비디비딥(DBDBDEEP)** 팀의 최종 프로젝트입니다.
+<p align="center">
+  사진 · 영상 · URL 한 장만으로 딥페이크를 즉시 판별하는 <b>실시간 AI 검증 플랫폼</b>
+</p>
 
-고도화된 생성형 AI 콘텐츠로 인한 딥페이크 범죄를 예방하기 위해,  
-누구나 쉽게 사용할 수 있는 **실시간 딥페이크 검증 서비스**를 개발했습니다.
+<p align="center">
+  멋쟁이사자처럼 AI CV 단기심화 부트캠프 3기 | <b>팀 디비디비딥 (DBDBDEEP)</b>
+</p>
 
----
-
-## 💡 Key Features
-
-- 멀티 입력 지원 (Image / Video / URL)
-- Pixel + Frequency 기반 이중 탐지 모델
-- EfficientNet 기반 앙상블 구조
-- 최신 Diffusion 생성 이미지 대응
-- 딥페이크 확률 + Trust Score 제공
-- Grad-CAM 기반 Explainable AI 시각화
-- 웹 UI 실시간 분석
-
----
-
-## 🧠 Detection Architecture
-Input (Image / Video / URL)
-↓
-Pixel Model (EfficientNet-V2-S)
-Frequency Model (SRM + Y Channel)
-↓
-Weighted Soft Voting Ensemble
-↓
-Fake Probability + Trust Score
-↓
-Grad-CAM Visualization
+<p align="center">
+  <img src="https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white"/>
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white"/>
+  <img src="https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"/>
+  <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white"/>
+  <img src="https://img.shields.io/badge/AWS_EC2-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white"/>
+  <img src="https://img.shields.io/badge/CUDA-76B900?style=for-the-badge&logo=nvidia&logoColor=white"/>
+</p>
 
 ---
 
-## 🛠 Tech Stack
+## 📌 목차
 
-### AI / ML
-- PyTorch
-- OpenCV
-- InsightFace (RetinaFace)
-- timm
-- NumPy / Pandas
-- scikit-learn
-
-### Backend / Frontend
-- FastAPI
-- React
-
-### Infra
-- AWS EC2
-- Docker
-- NGINX
-- GitHub Actions
-- CUDA (A100 GPU)
+1. [기획 배경](#-기획-배경--문제-정의)
+2. [프로젝트 목표 및 기대효과](#-프로젝트-목표--기대효과)
+3. [기존 서비스와 차별점](#-기존-서비스와-차별점)
+4. [서비스 개요](#-서비스-개요)
+5. [핵심 기능](#-핵심-기능)
+6. [시스템 아키텍처](#-시스템-아키텍처)
+7. [데이터셋](#-데이터셋)
+8. [모델 설계](#-모델-설계)
+   - [Image Model](#1️⃣-image-model--efficientnet-v2-s)
+   - [Frequency Model](#2️⃣-frequency-model--srm--efficientnet-v2-s)
+   - [Ensemble](#3️⃣-ensemble--weighted-soft-voting)
+9. [분석 리포트](#-분석-리포트-xai)
+10. [사용 방법](#-사용-방법)
+11. [팀원](#-팀원)
 
 ---
 
-## 📊 Dataset & Preprocessing
+## 🚨 기획 배경 · 문제 정의
 
-### Dataset
+> **"사진 한 장만으로는 이제 진짜와 가짜를 구분할 수 없다."**
 
-- FaceForensics++
-- FFHQ
-- Celeb-DF
-- FaceSwapGAN
-- Custom generated images (FLUX, Qwen, Kolors)
+생성형 AI의 고도화로 **육안으로는 식별 불가능한 수준**의 딥페이크 이미지가 범람하고 있습니다.
 
-최신 생성 모델 데이터까지 직접 구축하여 일반화 성능을 강화했습니다.
+| 문제 | 현황 |
+|---|---|
+| 📱 데이팅 앱·SNS 확산 | 비대면 신뢰 공백 확대 |
+| 🤖 Diffusion 기반 생성 AI | 완벽한 가상 인물 생성 가능 |
+| 💔 로맨스 스캠·사칭 범죄 급증 | 개인이 대응하기 어려운 수준 |
+| 🚫 대중적 방어 수단 부재 | 실시간 검증 가능한 서비스 없음 |
 
-### Preprocessing
-
-- RetinaFace 기반 얼굴 검출
-- Bounding box 확장
-- 224×224 Crop & Resize
-- 미세 위조 패턴 보존 중심 전처리
+👉 **누구나 즉시 사용 가능한 실시간 딥페이크 검증 시스템**이 필요합니다.
 
 ---
 
-## 🧪 Model Design
+## 🎯 프로젝트 목표 · 기대효과
 
-### Image Model
-- EfficientNet-V2-S
-- 국소 텍스처 아티팩트 학습
+### 목표
 
-### Frequency Model
-- SRM 기반 고주파 특징 + Y Channel
-- Custom EfficientNet-V2-S (4-channel input)
+| 목표 | 설명 |
+|---|---|
+| ⚡ Real-time Detection Engine | 업로드 즉시 딥페이크 여부 판별하는 고성능 추론 엔진 |
+| 🔬 Multi-Modal 신호 분석 | 픽셀 변조 흔적 + 주파수(Frequency) 특성 결합으로 탐지 정확도 향상 |
+| 🧠 Explainable AI (XAI) | Grad-CAM 히트맵 + Confidence Score로 분석 근거 시각화 |
+| 🛡️ 디지털 안전망 구축 | 로맨스 스캠 등 디지털 범죄 사전 예방 |
 
-### Ensemble
+### 기대 효과
 
-Weighted Soft Voting:
-Final = 0.37 * Image + 0.63 * Frequency
+- **데이터 기반 객관적 의사결정** — 감이 아닌 AI 신뢰 점수(%)로 진위 여부 합리적 판단
+- **디지털 사기 피해 선제적 차단** — 조작 이미지 사전 탐지로 잠재적 피해 예방
+- **탐지 기술의 대중화** — 연구·수사기관 중심 기술을 일반 사용자 B2C 서비스로 확장
+- **플랫폼 확장성 확보** — API 기반 구조로 데이팅 앱·SNS·중고거래 등 다양한 서비스 연동
+
+---
+
+## 🆚 기존 서비스와 차별점
+
+| 구분 | 기존 서비스 | **DBDBDEEP** |
+|---|---|---|
+| 탐지 대상 | 특정 기법에 한정 (GAN 위주) | **최신 Diffusion·Transformer 기반까지 대응** |
+| 입력 지원 | 이미지 단일 분석 | **Image / Video / URL 멀티 입력** |
+| 분석 방식 | 단일 모델 | **Pixel + Frequency 이중 탐지 앙상블** |
+| 설명 가능성 | 점수만 제공 | **Grad-CAM + LLM 기반 자연어 리포트** |
+| 접근성 | 전문가 도구 수준 | **누구나 사용 가능한 UI/UX** |
 
 ---
 
-## 🏆 Performance
+## 🖥️ 서비스 개요
 
-| Model | F1 (Macro) | AUC |
-|------|-----------|-----|
-| Image Model | 0.8013 | 0.8903 |
-| Frequency Model | 0.9337 | 0.9840 |
-| Ensemble | **0.9410** | **0.9789** |
-
-앙상블 적용 시 단일 모델 대비 성능이 크게 향상되었습니다.
+```
+사용자 (SNS·메신저에서 수상한 프로필 발견)
+        │
+        ▼
+  이미지 / 영상 / URL 업로드
+        │
+        ▼
+ ┌─────────────────────────────┐
+ │   DBDBDEEP Detection Engine │
+ │  ┌──────────┐ ┌───────────┐ │
+ │  │  Image   │ │  Frequency│ │
+ │  │  Model   │ │   Model   │ │
+ │  │(RGB 3ch) │ │(SRM+Y 4ch)│ │
+ │  └────┬─────┘ └─────┬─────┘ │
+ │       └──────┬───────┘       │
+ │   Weighted Soft Voting        │
+ │   0.37·p_img + 0.63·p_freq   │
+ └──────────────┬───────────────┘
+                │
+                ▼
+   Real Score (%) · Risk Level · Grad-CAM
+```
 
 ---
-👥 Team DBDBDEEP
 
-조영준 (팀장): 이미지 모델, 데이터 구축
+## ✨ 핵심 기능
 
-권소윤: 이미지 모델, Frontend / Backend
+### 1️⃣ 멀티 입력 지원
+| 입력 방식 | 설명 |
+|---|---|
+| 📷 Image | 이미지 파일 직접 업로드 |
+| 🎥 Video | 영상 프레임 단위 분석 |
+| 🔗 URL | URL에서 이미지 자동 추출 분석 |
 
-주요셉: 이미지 모델, Frontend
+### 2️⃣ 이중 탐지 모델
+- **Image Model** : EfficientNet-V2-S — 픽셀 수준 텍스처 아티팩트 탐지
+- **Frequency Model** : SRM + EfficientNet-V2-S — 주파수 도메인 위조 흔적 탐지
+- → 두 관점의 신호를 동시에 분석하여 탐지 강건성 확보
 
-신동혁: 주파수 모델, Backend
+### 3️⃣ Weighted Soft Voting 앙상블
+- Grid Search 기반 F1-Macro 최적 가중치 탐색
+- **최종 수식 : `0.37 × p_image + 0.63 × p_freq`**
 
-장은태: 주파수 모델, Frontend, 영상 제작
+### 4️⃣ Explainable AI 리포트
+- 🔥 **Grad-CAM** 히트맵 — 모델이 주목한 위조 영역 시각화
+- 📊 **Confidence Score** — 0~100 Real/Fake 신뢰 점수
+- ⚠️ **위험 단계** — Safe / Caution / Danger 3단계 분류
+- 🤖 **LLM 자연어 리포트** — GPT 기반 분석 결과 자동 설명
+
+### 5️⃣ User Flow
+```
+1. 검증 대상 선택  →  SNS·메신저에서 의심 이미지 저장 또는 URL 복사
+2. 플랫폼 업로드  →  이미지 / 영상 업로드 또는 URL 입력 후 "AI 분석 시작"
+3. 결과 확인      →  Real Score(%) + 위험 단계 + Grad-CAM 리포트
+4. 신뢰도 판단   →  콘텐츠 진위 판단 참고자료로 활용
+```
+
+---
+
+## 🏗️ 시스템 아키텍처
+
+<p align="center">
+  <img src="assets/architecture.png" alt="System Architecture" width="860"/>
+</p>
+
+| 레이어 | 기술 |
+|---|---|
+| **Model Training** | PyTorch · timm · Google Colab (A100) |
+| **Backend API** | FastAPI · Redis |
+| **Frontend** | React |
+| **Infra** | AWS EC2 · Docker · NGINX · GitHub Actions |
+| **AI Report** | Grad-CAM · OpenAI GPT |
+
+---
+
+## 📦 데이터셋
+
+### 학습 데이터
+
+| 분류 | 출처 | 비고 |
+|---|---|---|
+| Real | FaceForensics++, FFHQ, Celeb-DF | 공개 데이터셋 |
+| Fake | FaceForensics++, Celeb-DF, FaceSwapGAN | 공개 데이터셋 |
+| Fake (Custom) | FLUX, Qwen, Kolors, Stable Diffusion | 최신 Diffusion 모델 직접 생성 |
+
+> 최신 생성 모델 데이터를 직접 구축하여 일반화 성능을 강화했습니다.
+
+### 평가용 테스트 데이터셋 (3,968장 · Real : Fake = 1:1)
+
+| 구분 | 폴더명 | 수량 | 설명 |
+|---|---|---|---|
+| Real | ffhq | 1,000 | FFHQ (학습 미사용) |
+| Real | real_celeb | 984 | 실제 셀럽 이미지 |
+| Fake | Celeb_Deepfake_Files | 984 | 셀럽 Face Swap |
+| Fake | SFHQ_part2 | 500 | SFHQ Part2 (학습 미사용) |
+| Fake | SFHQ_part4 | 500 | SFHQ Part4 (학습 미사용) |
+
+### 전처리 파이프라인
+
+```
+원본 이미지
+    │
+    ▼  RetinaFace 얼굴 검출
+    │  Bounding Box 확장 (margin 15%)
+    ▼  224×224 Crop & Resize
+    │
+    ├──► [Image Model용]  RGB 정규화 (ImageNet mean/std)
+    │
+    └──► [Freq Model용]   YCrCb 변환 → SRM 필터 3종 적용
+                          → SRM×3 + Y채널 4ch .npy 저장
+```
+
+---
+
+## 🧠 모델 설계
+
+### 1️⃣ Image Model — EfficientNet-V2-S
+
+> 픽셀 수준의 국소 텍스처 아티팩트를 학습하는 RGB 기반 분류 모델
+
+**학습 전략**
+
+| 항목 | 설정 |
+|---|---|
+| Backbone | EfficientNet-V2-S (ImageNet pretrained) |
+| 입력 | RGB 3ch · 224×224 |
+| Augmentation | ColorJitter + RandomAffine + GaussianBlur + RandomErasing |
+| Optimizer | AdamW `lr=8e-5` `wd=0.01` |
+| Loss | BCEWithLogitsLoss + **Label Smoothing** (α=0.1) |
+| Batch / Epoch | 128 / 5 |
+
+**성능 (Test Set)**
+
+```
+              precision    recall  f1-score
+        Real     0.7792    0.8432    0.8100
+        Fake     0.8292    0.7611    0.7937
+   macro avg     0.8042    0.8022    0.8018
+
+  AUC-ROC : 0.8903
+```
+
+📈 **베이스라인 대비 F1-Macro : `0.5900 → 0.8013` (+35.8%)**
+
+---
+
+### 2️⃣ Frequency Model — SRM + EfficientNet-V2-S
+
+> 주파수 도메인의 고주파 위조 흔적을 탐지하는 4채널 기반 분류 모델
+
+**SRM (Steganalysis Rich Model) 입력 구성**
+
+```
+원본 이미지 Y채널
+    │
+    ├── SRM Filter 1 (Laplacian 계열)   → ch 0
+    ├── SRM Filter 2 (2D 2차 미분)      → ch 1
+    ├── SRM Filter 3 (수평 잔차)         → ch 2
+    └── Y 채널 (원본 밝기)               → ch 3
+                        ↓
+            (B, 4, 224, 224) Tensor
+```
+
+**학습 전략**
+
+| 항목 | 설정 |
+|---|---|
+| Backbone | EfficientNet-V2-S (4ch 입력, ImageNet weight transfer) |
+| Augmentation | Flip + Rotation + RandomErasing + **Online Gaussian Noise** (p=0.3) |
+| Sampler | **WeightedRandomSampler** (클래스 불균형 대응) |
+| Optimizer | AdamW `lr=1e-4` `wd=0.15` |
+| Scheduler | **OneCycleLR** (pct_start=0.3) |
+| 정규화 | **Mixup** (α=0.4) + Dropout 0.6 |
+| AMP | autocast + GradScaler |
+| Batch / Epoch | 48 / 30 |
+
+**성능 (Test Set)**
+
+```
+              precision    recall  f1-score
+        Real     0.9575    0.9078    0.9320
+        Fake     0.9123    0.9597    0.9354
+   macro avg     0.9349    0.9337    0.9337
+
+  AUC-ROC : 0.9840
+```
+
+📈 **베이스라인 대비 F1-Macro : `0.7821 → 0.9337` (+19.4%)**
+
+---
+
+### 3️⃣ Ensemble — Weighted Soft Voting
+
+> 두 모델의 출력 확률을 가중 평균으로 결합
+
+**비교 전략**
+
+| 전략 | 수식 |
+|---|---|
+| Simple Average | `(p_img + p_freq) / 2` |
+| **Weighted Average** ✅ | **`w·p_img + (1-w)·p_freq`** |
+| Geometric Mean | `√(p_img × p_freq)` |
+| Max Rule | `max(p_img, p_freq)` |
+| Min Rule | `min(p_img, p_freq)` |
+| Logit Average | `σ((logit(p_img) + logit(p_freq)) / 2)` |
+
+**최적 가중치 탐색 (Grid Search, F1-Macro 기준)**
+
+- F1-Macro 허용 오차(tol=0.005) 이내 후보 중 **0.5에 가장 가까운 w 선택** (균등 앙상블 우선)
+- **최종 수식 : `Final = 0.37 × p_image + 0.63 × p_freq`**
+
+**최종 성능 (Test Set)**
+
+| 모델 | F1 (Macro) | AUC-ROC |
+|---|---|---|
+| Image Only (baseline → final) | 0.5900 → 0.8013 | 0.8903 |
+| Frequency Only (baseline → final) | 0.7821 → 0.9337 | 0.9840 |
+| **Ensemble** | **0.9410** | **0.9789** |
+
+---
+
+## 📊 분석 리포트 (XAI)
+
+```
+모델 예측 확률 (p_fake, p_real)
+        +
+Grad-CAM 히트맵 (위조 의심 영역 시각화)
+        │
+        ▼
+  GPT 기반 LLM
+        │
+        ▼
+ 자연어 분석 리포트 자동 생성
+ (위조 근거, 신뢰도 설명, 주의 권고)
+```
+
+- **위험 단계** : Safe (p_fake < 0.3) · Caution (0.3~0.7) · Danger (p_fake ≥ 0.7)
+- Grad-CAM으로 모델이 주목한 위조 영역을 히트맵으로 직관적 시각화
+- GPT API 연동으로 탐지 근거를 자연어로 자동 설명
+
+---
+
+## 🚀 사용 방법
+
+### 학습 (Training)
+
+**Image Model**
+```bash
+python train_image.py \
+  --data  /path/to/dataset \
+  --save  image.pth \
+  --epochs 5 \
+  --batch  128 \
+  --lr     8e-5
+```
+
+**Frequency Model**
+```bash
+# Step 1: 이미지 → SRM .npy 전처리 (최초 1회)
+python train_freq.py preprocess \
+  --data /path/to/raw_dataset \
+  --out  /path/to/freq_data
+
+# Step 2: 학습
+python train_freq.py train \
+  --data  /path/to/freq_data \
+  --save  freq.pt \
+  --epochs 30 \
+  --batch  48
+```
+
+### 서버 실행
+
+```bash
+pip install -r requirments.txt
+
+# 모델 가중치 배치 (같은 디렉터리에 image.pth, freq.pt 위치)
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+> ⚠️ `image.pth` · `freq.pt` 가중치 파일은 용량 문제로 저장소에 포함되지 않습니다.
+> Google Drive / HuggingFace Hub 등에 별도 보관 후 다운로드하여 사용하세요.
+
+---
+
+## 🛠️ 기술 스택
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white"/>
+  <img src="https://img.shields.io/badge/PyTorch-EE4C2C?style=flat-square&logo=pytorch&logoColor=white"/>
+  <img src="https://img.shields.io/badge/OpenCV-5C3EE8?style=flat-square&logo=opencv&logoColor=white"/>
+  <img src="https://img.shields.io/badge/scikit--learn-F7931E?style=flat-square&logo=scikitlearn&logoColor=white"/>
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white"/>
+  <img src="https://img.shields.io/badge/React-20232A?style=flat-square&logo=react&logoColor=61DAFB"/>
+  <img src="https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white"/>
+  <img src="https://img.shields.io/badge/NGINX-009639?style=flat-square&logo=nginx&logoColor=white"/>
+  <img src="https://img.shields.io/badge/AWS_EC2-FF9900?style=flat-square&logo=amazonaws&logoColor=white"/>
+  <img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white"/>
+  <img src="https://img.shields.io/badge/OpenAI-412991?style=flat-square&logo=openai&logoColor=white"/>
+</p>
+
+| 분류 | 기술 |
+|---|---|
+| **모델 학습** | PyTorch · timm · scikit-learn |
+| **데이터 전처리** | OpenCV · RetinaFace · InsightFace · NumPy |
+| **시각화** | Matplotlib · Seaborn · Grad-CAM |
+| **개발 환경** | Google Colab Pro+ (A100 GPU) · CUDA |
+| **Backend** | FastAPI · Redis |
+| **Frontend** | React |
+| **배포** | AWS EC2 · Docker · NGINX · GitHub Actions |
+| **AI Report** | OpenAI GPT API |
+
+---
+
+## 👥 팀원
+
+| 이름 | 역할 |
+|---|---|
+| **조영준** (팀장) | 이미지 모델 · 데이터 구축 |
+| **권소윤** | 이미지 모델 · Frontend / Backend |
+| **주요셉** | 이미지 모델 · Frontend |
+| **신동혁** | 주파수 모델 · Backend |
+| **장은태** | 주파수 모델 · Frontend · 영상 제작 |
+
+---
+
+<p align="center">
+  <b>"Can you trust what you see?" — DBDBDEEP이 답합니다. 🕵️</b>
+</p>

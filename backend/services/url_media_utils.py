@@ -66,6 +66,7 @@ URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 YTDLP_COOKIEFILE = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web,tv_embedded")
 YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web,web_safari")
+PYTUBEFIX_YOUTUBE_CLIENTS = _env_csv("PYTUBEFIX_YOUTUBE_CLIENTS", "ANDROID,WEB,IOS,MWEB")
 
 INSTAGRAM_SESSION_ID = (os.getenv("INSTAGRAM_SESSION_ID") or "").strip()
 INSTAGRAM_USER_AGENT = (os.getenv("INSTAGRAM_USER_AGENT") or _HTTP_USER_AGENT).strip() or _HTTP_USER_AGENT
@@ -190,6 +191,121 @@ def _load_pytubefix_youtube_cls():
     return YouTube
 
 
+def _pytubefix_client_candidates() -> List[str]:
+    clients: List[str] = []
+    seen: set[str] = set()
+    for raw in PYTUBEFIX_YOUTUBE_CLIENTS:
+        token = str(raw or "").strip().upper()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        clients.append(token)
+    if not clients:
+        clients = ["ANDROID", "WEB", "IOS", "MWEB"]
+    return clients
+
+
+def _build_pytubefix_instance(YouTube, watch_url: str, client: str):
+    # pytubefix 버전별 ctor 시그니처 차이를 흡수한다.
+    kwargs: Dict[str, Any] = {}
+    try:
+        import inspect
+
+        sig = inspect.signature(YouTube)
+        if "client" in sig.parameters:
+            kwargs["client"] = client
+        if "use_oauth" in sig.parameters:
+            kwargs["use_oauth"] = False
+        if "allow_oauth_cache" in sig.parameters:
+            kwargs["allow_oauth_cache"] = False
+    except Exception:
+        kwargs["client"] = client
+
+    return YouTube(watch_url, **kwargs)
+
+
+def _first_non_empty_stream(candidates: List[Any]) -> Any:
+    for item in candidates:
+        if item is not None:
+            return item
+    return None
+
+
+def _select_pytubefix_video_stream(yt) -> Any:
+    query = yt.streams
+    candidates: List[Any] = []
+
+    selectors = [
+        lambda q: q.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first(),
+        lambda q: q.filter(progressive=True).order_by("resolution").desc().first(),
+        lambda q: q.filter(adaptive=True, only_video=True, file_extension="mp4").order_by("resolution").desc().first(),
+        lambda q: q.filter(adaptive=True, only_video=True).order_by("resolution").desc().first(),
+        lambda q: q.filter(file_extension="mp4").order_by("resolution").desc().first(),
+        lambda q: q.order_by("resolution").desc().first(),
+    ]
+
+    for pick in selectors:
+        try:
+            candidates.append(pick(query))
+        except Exception:
+            candidates.append(None)
+
+    stream = _first_non_empty_stream(candidates)
+    if stream is not None:
+        return stream
+
+    try:
+        all_streams = list(query)
+    except Exception:
+        all_streams = []
+
+    best = None
+    best_key: Tuple[int, int, int, int] = (-1, -1, -1, -1)
+    for s in all_streams:
+        has_video = bool(getattr(s, "includes_video_track", False))
+        if not has_video:
+            continue
+        subtype = str(getattr(s, "subtype", "") or "").lower()
+        ext_rank = 2 if subtype == "mp4" else 1 if subtype == "webm" else 0
+        progressive = 1 if bool(getattr(s, "is_progressive", False)) else 0
+        has_audio = 1 if bool(getattr(s, "includes_audio_track", False)) else 0
+        res_text = str(getattr(s, "resolution", "") or "")
+        try:
+            res_num = int(re.sub(r"[^0-9]", "", res_text) or 0)
+        except Exception:
+            res_num = 0
+        key = (progressive, has_audio, ext_rank, res_num)
+        if key > best_key:
+            best_key = key
+            best = s
+    return best
+
+
+def _download_youtube_thumbnail_via_pytubefix(yt, source_url: str, video_id: str, max_bytes: int) -> DownloadedMedia:
+    thumb_url = str(getattr(yt, "thumbnail_url", "") or "").strip()
+    if not thumb_url:
+        raise ValueError("pytubefix 썸네일 URL을 찾지 못했습니다.")
+
+    content, content_type = _stream_download_bytes(
+        url=thumb_url,
+        max_bytes=max_bytes,
+        timeout_sec=URL_MEDIA_TIMEOUT_SEC,
+        session=None,
+        headers={"User-Agent": _HTTP_USER_AGENT, "Referer": "https://www.youtube.com/"},
+    )
+    ext = _path_ext_from_url(thumb_url) or _content_ext_from_type(content_type) or "jpg"
+    title = str(getattr(yt, "title", "") or "").strip()
+    filename = f"youtube_{video_id}_thumbnail.{ext}"
+    return DownloadedMedia(
+        source_url=source_url,
+        media_type="image",
+        filename=filename,
+        content=content,
+        extractor="youtube_shorts_pytubefix_thumbnail_fallback",
+        title=title,
+    )
+
+
 def _download_youtube_shorts_via_pytubefix(source_url: str, max_bytes: int) -> DownloadedMedia:
     video_id = _extract_youtube_video_id(source_url)
     if not video_id:
@@ -198,64 +314,76 @@ def _download_youtube_shorts_via_pytubefix(source_url: str, max_bytes: int) -> D
     YouTube = _load_pytubefix_youtube_cls()
     watch_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    with tempfile.TemporaryDirectory(prefix="yt-shorts-") as tmp_dir:
-        try:
-            yt = YouTube(watch_url)
-        except Exception as exc:
-            raise ValueError(f"pytubefix 메타데이터 조회 실패: {exc}") from exc
-
-        stream = None
-        try:
-            stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
-        except Exception:
-            stream = None
-
-        if stream is None:
+    last_error: Optional[Exception] = None
+    last_yt = None
+    for client in _pytubefix_client_candidates():
+        with tempfile.TemporaryDirectory(prefix=f"yt-shorts-{client.lower()}-") as tmp_dir:
             try:
-                stream = yt.streams.get_highest_resolution()
-            except Exception:
+                yt = _build_pytubefix_instance(YouTube, watch_url=watch_url, client=client)
+                last_yt = yt
+            except Exception as exc:
+                last_error = exc
+                continue
+
+            try:
+                stream = _select_pytubefix_video_stream(yt)
+            except Exception as exc:
+                last_error = exc
                 stream = None
 
-        if stream is None:
+            if stream is None:
+                last_error = ValueError(f"client={client}: 다운로드 가능한 스트림을 찾지 못했습니다.")
+                continue
+
+            subtype = str(getattr(stream, "subtype", "") or "").strip().lower() or "mp4"
+            filename_hint = f"{video_id}.{subtype}"
             try:
-                stream = yt.streams.filter(adaptive=True, only_video=True, file_extension="mp4").order_by("resolution").desc().first()
-            except Exception:
-                stream = None
+                downloaded_path = stream.download(output_path=tmp_dir, filename=filename_hint)
+            except Exception as exc:
+                last_error = exc
+                continue
 
-        if stream is None:
-            raise ValueError("YouTube Shorts에서 다운로드 가능한 스트림을 찾지 못했습니다.")
+            file_path = str(downloaded_path or "").strip()
+            if not file_path or not os.path.isfile(file_path):
+                file_candidates = sorted(glob.glob(os.path.join(tmp_dir, "*")))
+                file_path = next((p for p in file_candidates if os.path.isfile(p)), "")
+            if not file_path or not os.path.isfile(file_path):
+                last_error = ValueError("pytubefix 다운로드 파일을 찾지 못했습니다.")
+                continue
 
+            size = os.path.getsize(file_path)
+            if size <= 0:
+                last_error = ValueError("다운로드된 미디어 파일이 비어 있습니다.")
+                continue
+            if size > max_bytes:
+                raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
+
+            with open(file_path, "rb") as fp:
+                content = fp.read()
+
+            title = str(getattr(yt, "title", "") or "").strip()
+            filename = os.path.basename(file_path)
+            return DownloadedMedia(
+                source_url=source_url,
+                media_type="video",
+                filename=filename,
+                content=content,
+                extractor=f"youtube_shorts_pytubefix_{client.lower()}",
+                title=title,
+            )
+
+    if last_yt is not None:
         try:
-            downloaded_path = stream.download(output_path=tmp_dir, filename=f"{video_id}.mp4")
-        except Exception as exc:
-            raise ValueError(f"pytubefix 다운로드 실패: {exc}") from exc
+            return _download_youtube_thumbnail_via_pytubefix(
+                yt=last_yt,
+                source_url=source_url,
+                video_id=video_id,
+                max_bytes=max_bytes,
+            )
+        except Exception as thumb_exc:
+            last_error = thumb_exc
 
-        file_path = str(downloaded_path or "").strip()
-        if not file_path or not os.path.isfile(file_path):
-            file_candidates = sorted(glob.glob(os.path.join(tmp_dir, "*")))
-            file_path = next((p for p in file_candidates if os.path.isfile(p)), "")
-        if not file_path or not os.path.isfile(file_path):
-            raise ValueError("pytubefix 다운로드 파일을 찾지 못했습니다.")
-
-        size = os.path.getsize(file_path)
-        if size <= 0:
-            raise ValueError("다운로드된 미디어 파일이 비어 있습니다.")
-        if size > max_bytes:
-            raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
-
-        with open(file_path, "rb") as fp:
-            content = fp.read()
-
-        title = str(getattr(yt, "title", "") or "").strip()
-        filename = os.path.basename(file_path)
-        return DownloadedMedia(
-            source_url=source_url,
-            media_type="video",
-            filename=filename,
-            content=content,
-            extractor="youtube_shorts_pytubefix",
-            title=title,
-        )
+    raise ValueError(f"YouTube Shorts에서 다운로드 가능한 스트림을 찾지 못했습니다. last_error={last_error}")
 
 
 def _path_ext_from_url(source_url: str) -> str:

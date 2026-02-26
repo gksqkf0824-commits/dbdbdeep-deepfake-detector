@@ -744,8 +744,12 @@ export default function Analyze() {
               onModeChange={onChangeMode}
               onPickFile={onPickFile}
               onUrlChange={(value) => {
-                setImageUrl(value);
+                const nextValue = String(value || "");
+                setImageUrl(nextValue);
                 if (urlPreview) setUrlPreview(null);
+                if (result) setResult(null);
+                if (error) setError("");
+                stopProgress(0);
               }}
               onAnalyze={analyze}
             />

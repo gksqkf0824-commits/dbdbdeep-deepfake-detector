@@ -2,8 +2,7 @@
 URL 기반 미디어(이미지/영상) 다운로드 서비스.
 
 지원 분기:
-1) YouTube Shorts URL 동영상 추론(pytubefix)
-2) YouTube 일반 URL 동영상/이미지 추론(yt-dlp)
+1) YouTube URL 동영상/이미지 추론(yt-dlp CLI 우선, pytubefix/yt-dlp API fallback)
 3) Instagram URL 동영상/이미지 추론(Instaloader + OpenGraph + yt-dlp fallback)
 4) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
 """
@@ -14,10 +13,12 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
@@ -732,6 +733,106 @@ def _download_direct_media(source_url: str, max_bytes: int) -> DownloadedMedia:
 # yt-dlp helpers (YouTube / Generic)
 # =========================
 
+def _ensure_parent_dir(path_obj: Path) -> None:
+    parent = path_obj.parent
+    if parent and not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int) -> str:
+    """
+    yt-dlp CLI로 YouTube URL을 local_path 위치로 다운로드한다.
+    yt-dlp는 실제 확장자가 달라질 수 있으므로 템플릿으로 받은 뒤 local_path로 통일한다.
+    """
+    p = Path(local_path)
+    _ensure_parent_dir(p)
+    template = str(p.with_suffix("")) + ".%(ext)s"
+
+    has_ffmpeg = bool(shutil.which("ffmpeg"))
+    cmd: List[str] = [
+        "yt-dlp",
+        "--no-playlist",
+        "--no-part",
+        "--js-runtimes",
+        "node",
+        "--remote-components",
+        "ejs:github",
+        "--socket-timeout",
+        str(URL_MEDIA_TIMEOUT_SEC),
+        "--max-filesize",
+        str(max_bytes),
+        "--retries",
+        "2",
+        "--fragment-retries",
+        "2",
+        "--restrict-filenames",
+        "-o",
+        template,
+    ]
+
+    if YTDLP_COOKIEFILE and os.path.isfile(YTDLP_COOKIEFILE):
+        cmd += ["--cookies", YTDLP_COOKIEFILE]
+
+    if has_ffmpeg:
+        cmd += ["-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"]
+        cmd += ["--merge-output-format", "mp4"]
+    else:
+        cmd += ["-f", "best"]
+
+    cmd.append(source_url)
+
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise ValueError(f"yt-dlp CLI 실패: {err or 'unknown error'}")
+
+    candidates = sorted(
+        p.parent.glob(p.stem + ".*"),
+        key=lambda x: x.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise ValueError("yt-dlp CLI 완료 후 출력 파일을 찾지 못했습니다.")
+
+    final_path = candidates[0]
+    if final_path != p:
+        _ensure_parent_dir(p)
+        shutil.move(str(final_path), str(p))
+    return str(p)
+
+
+def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> DownloadedMedia:
+    with tempfile.TemporaryDirectory(prefix="yt-cli-") as tmp_dir:
+        out_path = Path(tmp_dir) / "youtube_media.mp4"
+        file_path = _download_youtube_to_path(source_url, out_path, max_bytes=max_bytes)
+        if not os.path.isfile(file_path):
+            raise ValueError("yt-dlp CLI 다운로드 파일이 없습니다.")
+
+        size = os.path.getsize(file_path)
+        if size <= 0:
+            raise ValueError("다운로드된 미디어 파일이 비어 있습니다.")
+        if size > max_bytes:
+            raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
+
+        with open(file_path, "rb") as fp:
+            content = fp.read()
+
+        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+        media_type = "image" if ext in _IMAGE_EXTS else "video"
+        filename = os.path.basename(file_path)
+        return DownloadedMedia(
+            source_url=source_url,
+            media_type=media_type,
+            filename=filename,
+            content=content,
+            extractor="youtube_ytdlp_cli",
+            title="",
+        )
+
 def _parse_js_runtimes(raw: str) -> Dict[str, Dict[str, str]]:
     """
     yt-dlp 신버전은 js_runtimes를 {runtime: {config}} 형태(dict)로 기대한다.
@@ -1440,8 +1541,7 @@ def _download_instagram_media(source_url: str, max_bytes: int) -> DownloadedMedi
 def download_media_from_url(source_url: str) -> DownloadedMedia:
     """
     URL 미디어 다운로드 진입점.
-    - YouTube Shorts URL: pytubefix 전용 경로
-    - YouTube 일반 URL: yt-dlp 전용 경로
+    - YouTube URL: yt-dlp CLI 우선 + pytubefix/yt-dlp API fallback
     - Instagram URL: Instaloader 우선 + OpenGraph + yt-dlp fallback 경로
     - 기타 URL: direct-http 우선, 실패 시 yt-dlp generic 경로
     """
@@ -1474,27 +1574,40 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
         )
 
     if _is_youtube_url(validated_url):
+        youtube_errors: List[str] = []
+
+        try:
+            return _download_youtube_with_ytdlp_cli(validated_url, max_bytes=max_bytes)
+        except Exception as cli_exc:
+            youtube_errors.append(f"yt-dlp-cli: {cli_exc}")
+
         if _is_youtube_shorts_url(validated_url):
             try:
                 return _download_youtube_shorts_via_pytubefix(validated_url, max_bytes=max_bytes)
             except Exception as shorts_exc:
+                youtube_errors.append(f"pytubefix-shorts: {shorts_exc}")
                 if _is_pytubefix_bot_error(str(shorts_exc)):
                     raise ValueError(_pytubefix_bot_detail(shorts_exc)) from shorts_exc
                 if _is_login_or_rate_limit_error(str(shorts_exc)):
                     raise ValueError(_login_or_rate_limit_detail(validated_url)) from shorts_exc
-                raise ValueError(f"YouTube Shorts 처리 실패(pytubefix): {shorts_exc}") from shorts_exc
+                raise ValueError(
+                    "YouTube Shorts 처리 실패(yt-dlp CLI + pytubefix). "
+                    + " | ".join(youtube_errors)
+                ) from shorts_exc
 
         try:
             return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")
         except Exception as ytdlp_exc:
+            youtube_errors.append(f"yt-dlp/youtube: {ytdlp_exc}")
             try:
                 return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="generic")
             except Exception as generic_exc:
+                youtube_errors.append(f"yt-dlp/generic: {generic_exc}")
                 if _is_login_or_rate_limit_error(str(ytdlp_exc)) or _is_login_or_rate_limit_error(str(generic_exc)):
                     raise ValueError(_login_or_rate_limit_detail(validated_url)) from generic_exc
                 raise ValueError(
-                    "YouTube URL 처리 실패(yt-dlp youtube + generic fallback). "
-                    f"youtube: {ytdlp_exc}; generic: {generic_exc}"
+                    "YouTube URL 처리 실패(yt-dlp CLI + yt-dlp API + generic fallback). "
+                    + " | ".join(youtube_errors)
                 ) from generic_exc
 
     # 기타 웹사이트: 직링크면 direct, 아니면 yt-dlp generic

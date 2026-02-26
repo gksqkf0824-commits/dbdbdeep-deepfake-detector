@@ -35,6 +35,17 @@ export default function Header() {
     nav("/analyze");
   };
 
+  // 🎮 게임 버튼 클릭 핸들러 추가
+  const handleGameClick = () => {
+    if (location.pathname === "/game") {
+      // 이미 게임 페이지라면 페이지를 새로고침하여 새로운 랜덤 문제 생성
+      window.location.reload();
+    } else {
+      // 아니라면 게임 페이지로 이동
+      nav("/game");
+    }
+  };
+
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">
       <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -52,9 +63,8 @@ export default function Header() {
         </nav>
 
         <div className="flex items-center gap-3">
-          {/* 🎮 페이지 이동으로 변경 */}
           <button
-            onClick={() => nav("/game")}
+            onClick={handleGameClick}
             className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-bold py-2 px-5 rounded-lg transition border border-slate-200"
           >
             🎮 AI와 대결해보기

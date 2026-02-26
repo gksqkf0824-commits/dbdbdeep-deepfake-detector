@@ -71,8 +71,8 @@ const ScoreDonutChart = ({ score, color, cross = false }) => {
         <PieChart>
           <Pie
             data={data}
-            innerRadius={50}
-            outerRadius={70}
+            innerRadius={60}
+            outerRadius={85}
             paddingAngle={0}
             startAngle={90}
             endAngle={450}
@@ -92,8 +92,8 @@ const ScoreDonutChart = ({ score, color, cross = false }) => {
           </>
         ) : (
           <>
-            <span className="text-2xl font-bold text-slate-700">{safeScore.toFixed(1)}</span>
-            <span className="text-[10px] text-slate-400 font-semibold tracking-wider">SCORE</span>
+            <span className="text-3xl font-bold text-slate-700">{safeScore.toFixed(1)}</span>
+            <span className="text-[11px] text-slate-400 font-semibold tracking-wider">SCORE</span>
           </>
         )}
       </div>
@@ -164,108 +164,105 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
   })();
 
   return (
-    /**
-     * 핵심 수정: flex-grow를 적용하여 왼쪽의 빈 공간을 모두 차지하도록 팽창시켰습니다.
-     * 상위 레이아웃에서 UploadCard 옆에 바로 붙게 됩니다.
-     */
-    <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 flex-grow flex flex-col h-full">
+    <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-8 flex-grow flex flex-col h-full">
       {/* Top Section */}
-      <div className="flex justify-between items-start flex-shrink-0">
-        <div className="flex items-center gap-6">
-          <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl bg-slate-50 border border-gray-200 flex-shrink-0 overflow-hidden flex items-center justify-center shadow-sm">
+      <div className="flex justify-between items-start flex-shrink-0 mb-12">
+        <div className="flex items-center gap-8">
+          <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-3xl bg-slate-50 border border-gray-200 flex-shrink-0 overflow-hidden flex items-center justify-center shadow-md">
             {isVideo ? (
               <div className="text-center text-slate-400">
-                <div className="text-3xl mb-1">▶</div>
-                <span className="text-xs font-bold uppercase tracking-wider block">Video</span>
+                <div className="text-4xl mb-1">▶</div>
+                <span className="text-sm font-bold uppercase tracking-wider block">Video</span>
               </div>
             ) : faceImageUrl ? (
               <img src={faceImageUrl} alt="Detected Face" className="w-full h-full object-cover" />
             ) : (
               <div className="text-center text-slate-400">
-                <div className="text-4xl mb-1">👤</div>
+                <div className="text-5xl mb-2">👤</div>
                 <span className="text-xs font-bold uppercase tracking-wider font-sans">Face</span>
               </div>
             )}
           </div>
           <div>
-            <div className="font-semibold text-slate-900 mb-1 text-lg">AI 판별 결과</div>
-            <div className={`text-5xl sm:text-6xl font-bold tracking-tight ${isUndetermined ? "text-red-600" : "text-blue-600"}`}>
+            <div className="font-semibold text-slate-900 mb-2 text-xl">AI 판별 결과</div>
+            <div className={`text-6xl sm:text-7xl font-bold tracking-tight ${isUndetermined ? "text-red-600" : "text-blue-600"}`}>
               {isUndetermined ? "추론 실패" : trust !== null ? `${trust.toFixed(2)}%` : "--%"}
             </div>
-            <div className="text-base text-slate-500 mt-2 font-medium">
+            <div className="text-lg text-slate-500 mt-3 font-medium">
               {result ? (isUndetermined ? "얼굴 미탐지" : "분석 완료") : "분석 결과 대기"}
             </div>
           </div>
         </div>
-        <div className="text-right pt-2">
-          <span className={`px-4 py-2 rounded-full text-sm font-bold ${badge.color} ${badge.bg}`}>
+        
+        {/* 수정 포인트: 배지 박스 및 텍스트 사이즈 대폭 확대 */}
+        <div className="text-right">
+          <span className={`inline-block px-10 py-5 rounded-2xl text-2xl font-black shadow-sm ${badge.color} ${badge.bg}`}>
             {badge.text}
           </span>
         </div>
       </div>
 
-      {/* Progress */}
-      <div className="mt-10 flex-shrink-0">
-        <div className="flex justify-between text-sm text-slate-500 font-medium mb-3">
-          <span>분석 진행률</span>
-          <span>{Math.floor(progress)}%</span>
+      {/* Progress & Analysis Charts */}
+      <div className="mt-auto flex flex-col">
+        <div className="mb-10">
+          <div className="flex justify-between text-base text-slate-500 font-medium mb-3">
+            <span>분석 진행률</span>
+            <span>{Math.floor(progress)}%</span>
+          </div>
+          <div className="h-3 bg-slate-100 rounded-full overflow-hidden shadow-inner">
+            <div className="h-full bg-gradient-to-r from-blue-600 to-indigo-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+          </div>
         </div>
-        <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-          <div className="h-full bg-gradient-to-r from-blue-600 to-indigo-500 transition-all duration-500" style={{ width: `${progress}%` }} />
-        </div>
-      </div>
 
-{/* Analysis Charts */}
-<div className="mt-8 flex flex-col flex-1">
-  {result && isUndetermined ? (    
-    <div className="flex flex-1 items-center">
-      <div className="w-full border border-red-200 rounded-lg px-6 py-14 bg-red-50/40 shadow-sm flex items-center justify-center text-center">
-        <div className="text-red-600 font-semibold text-lg">
-          얼굴 미탐지로 인해 추론이 실패했습니다
+        <div className="flex flex-col flex-1">
+          {result && isUndetermined ? (    
+            <div className="flex flex-1 items-center">
+              <div className="w-full border border-red-200 rounded-lg px-6 py-14 bg-red-50/40 shadow-sm flex items-center justify-center text-center">
+                <div className="text-red-600 font-semibold text-lg">
+                  얼굴 미탐지로 인해 추론이 실패했습니다
+                </div>
+              </div>
+            </div>
+          ) : isVideo ? (
+            <div className="border border-gray-200 rounded-lg p-6 bg-white shadow-sm">
+              <div className="font-semibold text-slate-800 mb-5 text-base">타임라인 정밀 분석</div>
+              <div className="h-[280px] w-full">
+                {result && hasTimelineData ? <VideoTimelineChart data={timeline} /> : <VideoTimelinePlaceholder />}
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-8">
+              <div className="border border-gray-200 rounded-xl p-8 bg-white flex flex-col items-center shadow-sm">
+                <div className="font-semibold text-slate-800 w-full mb-6 text-lg font-sans">주파수 분석 (Frequency)</div>
+                <div className="w-full flex-grow flex items-center justify-center min-h-[250px]">
+                  {result ? (
+                    isUndetermined ? <ScoreDonutChart score={100} color="#ef4444" cross /> : <ScoreDonutChart score={freqScore} color="#6366f1" />
+                  ) : (
+                    <div className="w-40 h-40 rounded-full border-8 border-slate-50 bg-slate-50/20 flex items-center justify-center shadow-inner">
+                      <span className="text-slate-300 text-sm font-bold uppercase tracking-widest">Waiting</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="border border-gray-200 rounded-xl p-8 bg-white flex flex-col items-center shadow-sm">
+                <div className="font-semibold text-slate-800 w-full mb-6 text-lg font-sans">픽셀 분석 (Pixel-level)</div>
+                <div className="w-full flex-grow flex items-center justify-center min-h-[250px]">
+                  {result ? (
+                    isUndetermined ? <ScoreDonutChart score={100} color="#ef4444" cross /> : <ScoreDonutChart score={pixelScore} color="#3b82f6" />
+                  ) : (
+                    <div className="w-40 h-40 rounded-full border-8 border-slate-50 bg-slate-50/20 flex items-center justify-center shadow-inner">
+                      <span className="text-slate-300 text-sm font-bold uppercase tracking-widest">Waiting</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      </div>
-    </div>
-        ) : isVideo ? (
-          <div className="border border-gray-200 rounded-lg p-6 bg-white shadow-sm">
-            <div className="font-semibold text-slate-800 mb-5 text-base">타임라인 정밀 분석</div>
-            <div className="h-[280px] w-full">
-              {result && hasTimelineData ? <VideoTimelineChart data={timeline} /> : <VideoTimelinePlaceholder />}
-            </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-6 h-full">
-            {/* 주파수 분석 */}
-            <div className="border border-gray-200 rounded-lg p-6 bg-white flex flex-col items-center shadow-sm">
-              <div className="font-semibold text-slate-800 w-full mb-5 text-base font-sans">주파수 분석 (Frequency)</div>
-              <div className="w-full flex-grow flex items-center justify-center min-h-[220px]">
-                {result ? (
-                  isUndetermined ? <ScoreDonutChart score={100} color="#ef4444" cross /> : <ScoreDonutChart score={freqScore} color="#6366f1" />
-                ) : (
-                  <div className="w-32 h-32 rounded-full border-8 border-slate-50 bg-slate-50/20 flex items-center justify-center">
-                    <span className="text-slate-300 text-xs font-bold uppercase tracking-widest">Waiting</span>
-                  </div>
-                )}
-              </div>
-            </div>
-            {/* 픽셀 분석 */}
-            <div className="border border-gray-200 rounded-lg p-6 bg-white flex flex-col items-center shadow-sm">
-              <div className="font-semibold text-slate-800 w-full mb-5 text-base font-sans">픽셀 분석 (Pixel-level)</div>
-              <div className="w-full flex-grow flex items-center justify-center min-h-[220px]">
-                {result ? (
-                  isUndetermined ? <ScoreDonutChart score={100} color="#ef4444" cross /> : <ScoreDonutChart score={pixelScore} color="#3b82f6" />
-                ) : (
-                  <div className="w-32 h-32 rounded-full border-8 border-slate-50 bg-slate-50/20 flex items-center justify-center">
-                    <span className="text-slate-300 text-xs font-bold uppercase tracking-widest">Waiting</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       {result?.videoMeta && (
-        <div className="mt-6 border border-slate-200 rounded-lg p-4 bg-slate-50 text-xs text-slate-600 grid grid-cols-2 gap-4 flex-shrink-0">
+        <div className="mt-8 border border-slate-200 rounded-lg p-4 bg-slate-50 text-xs text-slate-600 grid grid-cols-2 gap-4 flex-shrink-0">
           <div className="flex gap-2"><span className="font-bold text-slate-400">샘플:</span> {result.videoMeta.sampled_frames ?? "-"} frames</div>
           <div className="flex gap-2"><span className="font-bold text-slate-400">방식:</span> {formatAggModeLabel(result.videoMeta.agg_mode)}</div>
         </div>

@@ -17,6 +17,7 @@ from .evidence import (
 from .explain import (
     explain_from_evidence,
     generate_video_ai_comment,
+    sanitize_ai_comment,
 )
 from .inference import (
     GradCAM,
@@ -496,6 +497,7 @@ def analyze_evidence_bytes(
         if isinstance(first_explanation, dict):
             ai_comment = str(first_explanation.get("summary", "")).strip()
             ai_comment_source = str(first_explanation.get("summary_source", "rule_based")).strip() or "rule_based"
+    ai_comment = sanitize_ai_comment(ai_comment)
 
     result = {
         "request_id": request_id,
@@ -648,7 +650,7 @@ def analyze_video_bytes(content: bytes, filename: str) -> dict:
                 ai_comment = "영상 전체 흐름을 보면 조작 가능성이 조금 더 높게 보입니다. 아래 근거를 함께 확인해 주세요."
             else:
                 ai_comment = "영상 전체 흐름을 보면 원본일 가능성이 조금 더 높게 보입니다. 아래 근거를 함께 확인해 주세요."
-        analysis_result["ai_comment"] = ai_comment
+        analysis_result["ai_comment"] = sanitize_ai_comment(ai_comment)
         analysis_result["ai_comment_source"] = ai_comment_source
         analysis_result["input_media_type"] = "video"
 

@@ -35,6 +35,31 @@ def _strip_numeric_mentions(text: str) -> str:
     return cleaned
 
 
+def sanitize_ai_comment(text: str) -> str:
+    """Normalize AI comments to avoid numeric/probability-style phrasing."""
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(
+        r"(?:진짜|가짜|원본|조작|거짓)?\s*확률(?:은|는|이|가)?\s*[0-9]+(?:[.,][0-9]+)?\s*(?:%|％|퍼센트)?(?:\s*(?:로|으로))?",
+        "",
+        cleaned,
+    )
+    cleaned = _strip_numeric_mentions(cleaned)
+    cleaned = re.sub(r"\s+(은|는|이|가|을|를|로|으로)\s*([,.!?]|$)", r"\2", cleaned)
+    cleaned = re.sub(r"가능성\s+입니다", "가능성이 있습니다", cleaned)
+    cleaned = re.sub(r"가능성이\s+입니다", "가능성이 있습니다", cleaned)
+    cleaned = _normalize_text(cleaned)
+    cleaned = re.sub(r"\.\s*,\s*", ". ", cleaned)
+    cleaned = re.sub(r"^[,.;:]+\s*", "", cleaned)
+    cleaned = cleaned.strip(" .,!?:;")
+    if cleaned.startswith("입니다"):
+        return ""
+    if len(cleaned) < 6:
+        return ""
+    return cleaned
+
+
 def _qualitative_confidence(fake_prob: float) -> str:
     margin = abs(float(fake_prob) - 0.5)
     if margin >= 0.30:
@@ -238,7 +263,7 @@ def generate_image_ai_comment(
         "너는 비전문가 사용자에게 딥페이크 판독 결과를 설명하는 한국어 안내자다. "
         "중학생도 이해할 수 있는 쉬운 단어를 사용하고, 전문용어는 꼭 필요할 때만 짧게 풀이해서 쓴다. "
         "아라비아 숫자(0-9), 퍼센트 기호(%), 소수점 표기를 절대 사용하지 않는다. "
-        "출력은 1~2문장으로 작성하고, 단정 대신 가능성 중심으로 설명한다. "
+        "출력은 한두 문장으로 작성하고, 단정 대신 가능성 중심으로 설명한다. "
         "사용자가 흥미를 느낄 수 있도록 가벼운 위트와 센스를 한 번만 넣되, 과장/조롱은 금지한다. "
         "문장은 자연스럽게 이어져야 하며 해석 오해가 없도록 간결하게 작성한다."
     )
@@ -262,7 +287,7 @@ def generate_image_ai_comment(
     raw = _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=180)
     if not raw:
         return None
-    cleaned = _strip_numeric_mentions(raw)
+    cleaned = sanitize_ai_comment(raw)
     return cleaned or None
 
 
@@ -315,7 +340,7 @@ def generate_video_ai_comment(
         "너는 비전문가 사용자에게 영상 판독 결과를 설명하는 한국어 안내자다. "
         "어려운 기술 용어를 피하고, 시간 흐름(처음/중간/끝)을 중심으로 쉽게 설명한다. "
         "아라비아 숫자(0-9), 퍼센트 기호(%), 소수점 표기를 절대 사용하지 않는다. "
-        "출력은 1~2문장으로 작성하고, 단정 대신 가능성 중심으로 설명한다. "
+        "출력은 한두 문장으로 작성하고, 단정 대신 가능성 중심으로 설명한다. "
         "사용자가 흥미를 느낄 수 있도록 가벼운 위트와 센스를 한 번만 넣되, 과장/조롱은 금지한다. "
         "문장은 자연스럽게 이어져야 하며 해석 오해가 없도록 간결하게 작성한다."
     )
@@ -346,7 +371,7 @@ def generate_video_ai_comment(
     raw = _call_openai_comment(system_prompt=system_prompt, user_prompt=user_prompt, max_output_tokens=180)
     if not raw:
         return None
-    cleaned = _strip_numeric_mentions(raw)
+    cleaned = sanitize_ai_comment(raw)
     return cleaned or None
 
 
@@ -591,4 +616,5 @@ __all__ = [
     "generate_interpretation_guide",
     "generate_image_ai_comment",
     "generate_video_ai_comment",
+    "sanitize_ai_comment",
 ]

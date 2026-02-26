@@ -9,6 +9,10 @@ permissions:
   contents: read
   packages: write
 
+env:
+  BACKEND_IMAGE: ghcr.io/gksqkf0824-commits/dbdbdeep-deepfake-detector-backend
+  FRONTEND_IMAGE: ghcr.io/gksqkf0824-commits/dbdbdeep-deepfake-detector-frontend
+
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -81,13 +85,13 @@ jobs:
           sbom: false
           cache-from: |
             type=gha,scope=backend-dev
-            type=registry,ref=ghcr.io/${{ github.repository }}-backend:dev-latest
+            type=registry,ref=${{ env.BACKEND_IMAGE }}:dev-latest
           cache-to: type=gha,mode=min,scope=backend-dev
           build-args: |
             BUILDKIT_INLINE_CACHE=1
           tags: |
-            ghcr.io/${{ github.repository }}-backend:dev-latest
-            ghcr.io/${{ github.repository }}-backend:dev-${{ github.sha }}
+            ${{ env.BACKEND_IMAGE }}:dev-latest
+            ${{ env.BACKEND_IMAGE }}:dev-${{ github.sha }}
 
       - name: Build & push frontend (dev)
         if: ${{ needs.changes.outputs.frontend == 'true' }}
@@ -100,13 +104,13 @@ jobs:
           sbom: false
           cache-from: |
             type=gha,scope=frontend-dev
-            type=registry,ref=ghcr.io/${{ github.repository }}-frontend:dev-latest
+            type=registry,ref=${{ env.FRONTEND_IMAGE }}:dev-latest
           cache-to: type=gha,mode=min,scope=frontend-dev
           build-args: |
             BUILDKIT_INLINE_CACHE=1
           tags: |
-            ghcr.io/${{ github.repository }}-frontend:dev-latest
-            ghcr.io/${{ github.repository }}-frontend:dev-${{ github.sha }}
+            ${{ env.FRONTEND_IMAGE }}:dev-latest
+            ${{ env.FRONTEND_IMAGE }}:dev-${{ github.sha }}
 
   deploy_to_ec2:
     needs: build_and_push

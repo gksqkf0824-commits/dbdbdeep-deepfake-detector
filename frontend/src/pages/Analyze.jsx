@@ -56,9 +56,32 @@ const INTERPRETATION_GUIDE_FALLBACK = [
 const clampProb = (v) => Math.max(0, Math.min(1, Number(v)));
 const toRealConfidence = (fakeProb) =>
   Number.isFinite(Number(fakeProb)) ? (1 - clampProb(fakeProb)) * 100 : null;
+const NUMERIC_COMMENT_RE = /[0-9]+(?:[.,][0-9]+)?\s*(?:%|％|퍼센트)?/g;
 
 const toFiniteArray = (values) =>
   Array.isArray(values) ? values.map(Number).filter(Number.isFinite) : [];
+
+function sanitizeAiCommentText(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  let cleaned = raw.replace(
+    /(?:진짜|가짜|원본|조작|거짓)?\s*확률(?:은|는|이|가)?\s*[0-9]+(?:[.,][0-9]+)?\s*(?:%|％|퍼센트)?(?:\s*(?:로|으로))?/g,
+    ""
+  );
+  cleaned = cleaned.replace(NUMERIC_COMMENT_RE, "");
+  cleaned = cleaned.replace(/[%％]/g, "");
+  cleaned = cleaned.replace(/가능성이\s+입니다/g, "가능성이 있습니다");
+  cleaned = cleaned.replace(/가능성\s+입니다/g, "가능성이 있습니다");
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
+  cleaned = cleaned.replace(/\.\s*,\s*/g, ". ");
+  cleaned = cleaned.replace(/^[,.;:]+\s*/g, "");
+  cleaned = cleaned.replace(/\s+([,.!?])/g, "$1");
+  cleaned = cleaned.replace(/\s+(은|는|이|가|을|를|로|으로)\s*([,.!?]|$)/g, "$2");
+  cleaned = cleaned.replace(/\s{2,}/g, " ").trim();
+  if (cleaned.startsWith("입니다")) return "";
+  if (cleaned.length < 6) return "";
+  return cleaned;
+}
 
 function toDataUrl(base64Payload, mimeType = "image/jpeg") {
   if (typeof base64Payload !== "string" || base64Payload.length === 0) {
@@ -309,7 +332,7 @@ function parseLegacyResult(response) {
     preprocessed,
     comment: isFaceNotDetectedFailure
       ? "얼굴 미탐지로 인해 추론이 실패했습니다"
-      : String(data.ai_comment || "").trim() ||
+      : sanitizeAiCommentText(data.ai_comment) ||
         buildCommonComment({
           isFake: inferredIsFake,
           confidence: data.confidence,
@@ -407,8 +430,8 @@ function parseEvidenceResult(response) {
       topLevelSource || String(firstFace?.explanation?.summary_source || "").trim(),
     preprocessed,
     comment:
-      topLevelComment ||
-      String(explanation?.summary || "").trim() ||
+      sanitizeAiCommentText(topLevelComment) ||
+      sanitizeAiCommentText(explanation?.summary) ||
       buildCommonComment({
         isFake,
         confidence,

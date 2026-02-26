@@ -229,12 +229,21 @@ def _manual_pytubefix_po_token_verifier(*_args, **_kwargs):
     return PYTUBEFIX_VISITOR_DATA, PYTUBEFIX_PO_TOKEN
 
 
+def _should_use_legacy_manual_po_token() -> bool:
+    # pytubefix 최신 버전에서 use_po_token/po_token_verifier는 deprecated.
+    # 다만 수동 토큰이 명시된 경우에만 하위호환 경로를 제한적으로 사용한다.
+    return bool(PYTUBEFIX_USE_PO_TOKEN and _has_manual_pytubefix_po_token())
+
+
 def _is_pytubefix_bot_error(message: str) -> bool:
     low = str(message or "").lower()
     keywords = [
         "detected as a bot",
         "po_token",
         "proof of origin token",
+        "eof when reading a line",
+        "enter with your visitordata",
+        "use_po_token and po_token_verifier is deprecated",
     ]
     return any(keyword in low for keyword in keywords)
 
@@ -243,13 +252,15 @@ def _pytubefix_bot_detail(last_error: Optional[Exception] = None) -> str:
     node_installed = bool(shutil.which("node"))
     parts = [
         "YouTube Shorts 접근이 제한되었습니다(pytubefix 봇 감지).",
-        "PO Token 설정이 필요합니다.",
-        "PYTUBEFIX_VISITOR_DATA/PYTUBEFIX_PO_TOKEN 환경변수를 설정해 주세요.",
+        "현재 pytubefix는 자동 PO Token 경로를 권장하며, 수동 입력 프롬프트는 서버에서 동작하지 않습니다.",
     ]
-    if not node_installed:
+    if _should_use_legacy_manual_po_token():
+        parts.append("수동 PO Token 값이 설정되어 있습니다. 값이 만료되었거나 쌍이 맞지 않으면 실패할 수 있습니다.")
+    elif not node_installed:
         parts.append("서버에 node 실행 파일이 없어 자동 PO Token 생성이 불가능합니다.")
-    elif not PYTUBEFIX_USE_PO_TOKEN:
-        parts.append("자동 모드를 쓰려면 PYTUBEFIX_USE_PO_TOKEN=1로 설정해 주세요.")
+    else:
+        parts.append("WEB 클라이언트 자동 모드로 시도했지만 실패했습니다. pytubefix 업데이트 또는 수동 토큰 설정을 확인해 주세요.")
+    parts.append("권장 설정: PYTUBEFIX_YOUTUBE_CLIENTS=WEB,ANDROID,IOS,MWEB")
     parts.append("가이드: https://pytubefix.readthedocs.io/en/latest/user/po_token.html")
     if last_error is not None:
         parts.append(f"last_error={last_error}")
@@ -279,10 +290,12 @@ def _build_pytubefix_instance(YouTube, watch_url: str, client: str):
         "allow_oauth_cache": False,
     }
 
-    if PYTUBEFIX_USE_PO_TOKEN:
+    # 자동 모드에서는 use_po_token 인자를 넘기지 않는다.
+    # (deprecated 경고 + visitorData 입력 프롬프트로 인해 서버에서 EOF 발생 가능)
+    if _should_use_legacy_manual_po_token():
         kwargs["use_po_token"] = True
 
-    if _has_manual_pytubefix_po_token():
+    if _should_use_legacy_manual_po_token():
         # pytubefix 버전에 따라 verifier 콜백 방식 또는 직접 인자 주입 방식이 달라질 수 있다.
         kwargs["po_token_verifier"] = _manual_pytubefix_po_token_verifier
         kwargs["visitor_data"] = PYTUBEFIX_VISITOR_DATA

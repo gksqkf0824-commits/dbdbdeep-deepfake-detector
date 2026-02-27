@@ -32,13 +32,19 @@ _HTTP_USER_AGENT = (
 
 class _SilentYTDLPLogger:
     def debug(self, msg: str) -> None:
-        _ = msg
+        raw = (os.getenv("URL_MEDIA_DEBUG") or "").strip().lower()
+        if raw in {"1", "true", "yes", "on", "y"}:
+            print(f"[url-media][yt-dlp][debug] {msg}", flush=True)
 
     def warning(self, msg: str) -> None:
-        _ = msg
+        raw = (os.getenv("URL_MEDIA_DEBUG") or "").strip().lower()
+        if raw in {"1", "true", "yes", "on", "y"}:
+            print(f"[url-media][yt-dlp][warn] {msg}", flush=True)
 
     def error(self, msg: str) -> None:
-        _ = msg
+        raw = (os.getenv("URL_MEDIA_DEBUG") or "").strip().lower()
+        if raw in {"1", "true", "yes", "on", "y"}:
+            print(f"[url-media][yt-dlp][error] {msg}", flush=True)
 
 
 # =========================
@@ -82,6 +88,7 @@ def _env_csv(name: str, default: str) -> List[str]:
 
 URL_MEDIA_MAX_MB = _env_int("URL_MEDIA_MAX_MB", 120, 1)
 URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
+URL_MEDIA_DEBUG = _env_bool("URL_MEDIA_DEBUG", False)
 YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS = _env_int("YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS", 12, 1)
 YTDLP_YOUTUBE_API_MAX_ATTEMPTS = _env_int("YTDLP_YOUTUBE_API_MAX_ATTEMPTS", 16, 1)
 YTDLP_YOUTUBE_META_MAX_VARIANTS = _env_int("YTDLP_YOUTUBE_META_MAX_VARIANTS", 4, 1)
@@ -127,6 +134,27 @@ class DownloadedMedia:
 # =========================
 # Common utils
 # =========================
+
+def _debug_log(message: str) -> None:
+    if not URL_MEDIA_DEBUG:
+        return
+    print(f"[url-media] {message}", flush=True)
+
+
+def _mask_token(value: str, keep: int = 8) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return s
+    if len(s) <= keep:
+        return "***"
+    return s[:keep] + "...(masked)"
+
+
+def _summarize_err_text(message: str, max_len: int = 240) -> str:
+    text = " ".join(str(message or "").split())
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "...(truncated)"
 
 def _validate_source_url(source_url: str) -> str:
     s = (source_url or "").strip()
@@ -979,6 +1007,11 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
         video_id = _extract_youtube_video_id(normalized_source_url)
         if video_id:
             normalized_source_url = f"https://www.youtube.com/watch?v={video_id}"
+    _debug_log(
+        "youtube-cli:start "
+        f"source={source_url} normalized={normalized_source_url} "
+        f"max_bytes={max_bytes} timeout={URL_MEDIA_TIMEOUT_SEC}s"
+    )
 
     p = Path(local_path)
     _ensure_parent_dir(p)
@@ -1017,6 +1050,13 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
     if _resolve_cookiefile_for_source("youtube"):
         cookie_candidates.append(_prepare_writable_cookiefile(str(p.parent), strict=True, source_group="youtube"))
     cookie_candidates.append("")
+    _debug_log(
+        "youtube-cli:config "
+        f"js_runtimes={js_runtimes_value} has_ffmpeg={has_ffmpeg} "
+        f"cookie_candidates={len(cookie_candidates)} "
+        f"clients={','.join(YTDLP_YOUTUBE_CLIENTS)} alt_clients={','.join(YTDLP_YOUTUBE_ALT_CLIENTS)} "
+        f"visitor_data={_mask_token(YTDLP_YOUTUBE_VISITOR_DATA)} po_token={_mask_token(YTDLP_YOUTUBE_PO_TOKEN)}"
+    )
 
     # 1) 사용자 수동 커맨드와 동일한 1차 경로를 먼저 시도한다.
     # yt-dlp --cookies ... --js-runtimes node:... --remote-components ejs:github
@@ -1024,7 +1064,7 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
     #       --merge-output-format mp4
     primary_format = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
     primary_last_error = ""
-    for cookiefile in cookie_candidates:
+    for idx, cookiefile in enumerate(cookie_candidates, start=1):
         _clear_download_candidates(p)
 
         cmd = [
@@ -1050,6 +1090,10 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
         if has_ffmpeg:
             cmd += ["--merge-output-format", "mp4"]
         cmd.append(normalized_source_url)
+        _debug_log(
+            "youtube-cli:primary-attempt "
+            f"idx={idx}/{len(cookie_candidates)} use_cookie={bool(cookiefile)} format={primary_format}"
+        )
 
         proc = subprocess.run(
             cmd,
@@ -1059,11 +1103,21 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
         if proc.returncode == 0:
             selected = _pick_latest_non_image_download(p)
             if selected is not None:
+                try:
+                    size = selected.stat().st_size
+                except Exception:
+                    size = -1
+                _debug_log(f"youtube-cli:primary-success path={selected} size={size}")
                 return str(selected)
             primary_last_error = "yt-dlp가 YouTube URL에서 이미지 포맷만 반환했습니다."
+            _debug_log("youtube-cli:primary-image-only")
             continue
 
         primary_last_error = (proc.stderr or proc.stdout or "").strip()
+        _debug_log(
+            "youtube-cli:primary-fail "
+            f"returncode={proc.returncode} err={_summarize_err_text(primary_last_error)}"
+        )
         if _is_login_or_rate_limit_error(primary_last_error):
             break
 
@@ -1092,6 +1146,12 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
                     if has_ffmpeg:
                         cmd += ["--merge-output-format", "mp4"]
                 cmd.append(normalized_source_url)
+                _debug_log(
+                    "youtube-cli:fallback-attempt "
+                    f"num={attempt_count}/{YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS} "
+                    f"use_cookie={bool(cookiefile)} "
+                    f"extractor_args={'yes' if extractor_args else 'no'} fmt={fmt or 'none'}"
+                )
 
                 proc = subprocess.run(
                     cmd,
@@ -1102,11 +1162,21 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
                     selected = _pick_latest_non_image_download(p)
                     if selected is None:
                         last_error = "yt-dlp가 YouTube URL에서 이미지 포맷만 반환했습니다."
+                        _debug_log("youtube-cli:fallback-image-only")
                         continue
 
+                    try:
+                        size = selected.stat().st_size
+                    except Exception:
+                        size = -1
+                    _debug_log(f"youtube-cli:fallback-success path={selected} size={size}")
                     return str(selected)
 
                 last_error = (proc.stderr or proc.stdout or "").strip()
+                _debug_log(
+                    "youtube-cli:fallback-fail "
+                    f"returncode={proc.returncode} err={_summarize_err_text(last_error)}"
+                )
                 sig = _error_signature(last_error)
                 if sig and sig == prev_error_sig:
                     same_error_streak += 1
@@ -1115,6 +1185,7 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
                     prev_error_sig = sig
                 if same_error_streak >= 3:
                     stop_due_to_repeat = True
+                    _debug_log("youtube-cli:fallback-stop repeated_same_error>=3")
                     break
                 if _is_login_or_rate_limit_error(last_error):
                     saw_login_error = True
@@ -1136,7 +1207,12 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
             break
 
     if saw_login_error:
+        _debug_log("youtube-cli:stop login_or_rate_limit_detected")
         raise ValueError(_login_or_rate_limit_detail(source_url))
+    _debug_log(
+        "youtube-cli:stop failed "
+        f"last_error={_summarize_err_text(last_error or primary_last_error or 'unknown error')}"
+    )
     raise ValueError(f"yt-dlp CLI 실패: {last_error or primary_last_error or 'unknown error'}")
 
 
@@ -1648,6 +1724,10 @@ def _download_by_entry_format_urls(
 def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> DownloadedMedia:
     YoutubeDL = _load_yt_dlp_cls()
     treat_as_youtube = _is_youtube_url(source_url)
+    _debug_log(
+        f"ytdlp-api:start source_group={source_group} treat_as_youtube={treat_as_youtube} "
+        f"source={source_url}"
+    )
 
     with tempfile.TemporaryDirectory(prefix="url-media-") as tmp_dir:
         base_opts: Dict[str, Any] = {
@@ -1679,6 +1759,11 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
             opts = dict(base_opts)
             _apply_cookiefile_option(opts, tmp_dir, source_group=source_group)
             option_variants = [opts]
+        _debug_log(
+            "ytdlp-api:config "
+            f"variants={len(option_variants)} formats={len(format_candidates)} "
+            f"api_max_attempts={YTDLP_YOUTUBE_API_MAX_ATTEMPTS}"
+        )
 
         info = None
         last_error: Optional[Exception] = None
@@ -1690,6 +1775,11 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
                     attempt_count += 1
                     if attempt_count > YTDLP_YOUTUBE_API_MAX_ATTEMPTS:
                         break
+                _debug_log(
+                    "ytdlp-api:attempt "
+                    f"num={attempt_count if treat_as_youtube else '-'} "
+                    f"fmt={fmt or 'none'}"
+                )
                 try:
                     opts = dict(variant_opts)
                     if fmt:
@@ -1698,10 +1788,12 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
                         opts.pop("format", None)
                     with YoutubeDL(opts) as ydl:
                         info = ydl.extract_info(source_url, download=True)
+                    _debug_log("ytdlp-api:attempt-success download=True")
                     break
                 except Exception as exc:
                     last_error = exc
                     msg = str(exc)
+                    _debug_log(f"ytdlp-api:attempt-fail err={_summarize_err_text(msg)}")
                     if _is_format_unavailable_error(msg):
                         continue
                     if _is_ffmpeg_merge_error(msg):
@@ -1721,6 +1813,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
             # format expression이 전부 실패한 경우 메타데이터의 실제 스트림 URL로 한 번 더 시도
             for variant_opts in option_variants[:YTDLP_YOUTUBE_META_MAX_VARIANTS]:
                 try:
+                    _debug_log("ytdlp-api:meta-fallback-attempt")
                     meta_opts = dict(variant_opts)
                     meta_opts["skip_download"] = True
                     meta_opts["simulate"] = True
@@ -1729,6 +1822,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
                         meta_info = ydl.extract_info(source_url, download=False)
                     meta_entry = _pick_primary_entry(meta_info)
                     if meta_entry:
+                        _debug_log("ytdlp-api:meta-fallback-success")
                         return _download_by_entry_format_urls(
                             source_url=source_url,
                             entry=meta_entry,
@@ -1737,11 +1831,14 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
                         )
                 except Exception as exc:
                     last_error = exc
+                    _debug_log(f"ytdlp-api:meta-fallback-fail err={_summarize_err_text(exc)}")
                     continue
 
         if info is None:
             if saw_login_error or _is_login_or_rate_limit_error(str(last_error or "")):
+                _debug_log("ytdlp-api:stop login_or_rate_limit_detected")
                 raise ValueError(_login_or_rate_limit_detail(source_url))
+            _debug_log(f"ytdlp-api:stop failed err={_summarize_err_text(last_error)}")
             raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {last_error}")
 
         entry = _pick_primary_entry(info)
@@ -1943,9 +2040,14 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
     """
     validated_url = _validate_source_url(source_url)
     max_bytes = URL_MEDIA_MAX_MB * 1024 * 1024
+    _debug_log(
+        f"entry source={validated_url} youtube={_is_youtube_url(validated_url)} "
+        f"instagram={_is_instagram_url(validated_url)} max_bytes={max_bytes}"
+    )
 
     if _is_instagram_url(validated_url):
         fallback_errors: List[str] = []
+        _debug_log("branch instagram")
 
         try:
             return _download_instagram_media(validated_url, max_bytes=max_bytes)
@@ -1971,11 +2073,13 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
 
     if _is_youtube_url(validated_url):
         youtube_errors: List[str] = []
+        _debug_log("branch youtube")
 
         try:
             return _download_youtube_with_ytdlp_cli(validated_url, max_bytes=max_bytes)
         except Exception as cli_exc:
             youtube_errors.append(f"yt-dlp-cli: {cli_exc}")
+            _debug_log(f"branch youtube cli_fail err={_summarize_err_text(cli_exc)}")
             if _is_login_or_rate_limit_error(str(cli_exc)):
                 raise ValueError(_login_or_rate_limit_detail(validated_url)) from cli_exc
 
@@ -1983,12 +2087,14 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
             return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="youtube")
         except Exception as ytdlp_exc:
             youtube_errors.append(f"yt-dlp/youtube: {ytdlp_exc}")
+            _debug_log(f"branch youtube api_fail err={_summarize_err_text(ytdlp_exc)}")
             if _is_login_or_rate_limit_error(str(ytdlp_exc)):
                 raise ValueError(_login_or_rate_limit_detail(validated_url)) from ytdlp_exc
             try:
                 return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="generic")
             except Exception as generic_exc:
                 youtube_errors.append(f"yt-dlp/generic: {generic_exc}")
+                _debug_log(f"branch youtube generic_fail err={_summarize_err_text(generic_exc)}")
                 if _is_login_or_rate_limit_error(str(ytdlp_exc)) or _is_login_or_rate_limit_error(str(generic_exc)):
                     raise ValueError(_login_or_rate_limit_detail(validated_url)) from generic_exc
                 raise ValueError(

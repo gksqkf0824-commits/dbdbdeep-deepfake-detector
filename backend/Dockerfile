@@ -35,6 +35,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     VENV_PATH=/opt/venv \
+    PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}"
 ARG NODE_VERSION=20.19.0
 WORKDIR /app

@@ -29,17 +29,18 @@
 2. [프로젝트 목표 및 기대효과](#-프로젝트-목표--기대효과)
 3. [기존 서비스와 차별점](#-기존-서비스와-차별점)
 4. [서비스 화면](#️-서비스-화면)
-5. [서비스 개요](#️-서비스-개요)
-6. [핵심 기능](#-핵심-기능)
-7. [시스템 아키텍처](#-시스템-아키텍처)
-8. [데이터셋](#-데이터셋)
-9. [모델 설계](#-모델-설계)
-   - [Image Model](#1️⃣-image-model--efficientnet-v2-s)
-   - [Frequency Model](#2️⃣-frequency-model--srm--efficientnet-v2-s)
-   - [Ensemble](#3️⃣-ensemble--weighted-soft-voting)
-10. [분석 리포트](#-분석-리포트-xai)
-11. [사용 방법](#-사용-방법)
-12. [팀원](#-팀원)
+5. [시연 영상](#-시연-영상)
+6. [서비스 개요](#️-서비스-개요)
+7. [핵심 기능](#-핵심-기능)
+8. [시스템 아키텍처](#-시스템-아키텍처)
+9. [데이터셋](#-데이터셋)
+10. [모델 설계](#-모델-설계)
+    - [Image Model](#1️⃣-image-model--efficientnet-v2-s)
+    - [Frequency Model](#2️⃣-frequency-model--srm--efficientnet-v2-s)
+    - [Ensemble](#3️⃣-ensemble--weighted-soft-voting)
+11. [분석 리포트](#-분석-리포트-xai)
+12. [사용 방법](#-사용-방법)
+13. [팀원](#-팀원)
 
 ---
 
@@ -96,6 +97,14 @@
 
 <p align="center">
   <img src="assets/landing.png" alt="DBDBDEEP Landing Page" width="90%"/>
+</p>
+
+---
+
+## 🎬 시연 영상
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/76388bd5-1d5f-479b-9e7c-db017434bba0" controls width="90%"></video>
 </p>
 
 ---

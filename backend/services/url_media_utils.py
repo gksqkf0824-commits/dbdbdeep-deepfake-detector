@@ -617,6 +617,53 @@ def _build_cli_js_runtimes_value() -> str:
     return f"node:{node_path}" if node_path else "node"
 
 
+def _youtube_cli_format_candidates() -> List[str]:
+    """
+    1) 사용자 지정 포맷(YTDLP_YOUTUBE_FORMAT)
+    2) OpenCV 디코딩 호환성이 높은 H.264 우선 포맷
+    3) 보수적 mp4/progressive fallback
+    """
+    candidates: List[str] = []
+
+    custom = str(YTDLP_YOUTUBE_FORMAT or "").strip()
+    if custom:
+        candidates.append(custom)
+
+    candidates.extend(
+        [
+            # H.264 계열을 우선해 AV1(예: itag 399)로 인한 OpenCV 디코딩 실패를 피한다.
+            "bestvideo[vcodec~='^(avc1|h264)'][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][vcodec~='^(avc1|h264)']/best[vcodec~='^(avc1|h264)']",
+            "best[ext=mp4][vcodec~='^(avc1|h264)']/best[ext=mp4]/18/best",
+        ]
+    )
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for fmt in candidates:
+        key = fmt.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(fmt)
+    return deduped
+
+
+def _can_decode_video_first_frame(file_path: Path) -> bool:
+    try:
+        import cv2
+    except Exception:
+        # 디코더 검증을 못하는 환경에서는 다운로드 성공을 우선한다.
+        return True
+
+    cap = cv2.VideoCapture(str(file_path))
+    if not cap.isOpened():
+        cap.release()
+        return False
+    ok, frame = cap.read()
+    cap.release()
+    return bool(ok and frame is not None)
+
+
 def _yt_dlp_cli_prefix_candidates() -> List[str]:
     candidates: List[str] = ["yt-dlp"]
 
@@ -790,82 +837,97 @@ def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> Downloa
                 "YTDLP_YOUTUBE_COOKIEFILE을 확인해 주세요."
             )
         runtime_value = _build_cli_js_runtimes_value()
+        format_candidates = _youtube_cli_format_candidates()
 
         cli_errors: List[str] = []
         proc: Optional[subprocess.CompletedProcess] = None
 
         for cli_prefix in _yt_dlp_cli_prefix_candidates():
-            yt_cmd_parts: List[str] = [
-                cli_prefix,
-                "-vU",
-                "--cookies",
-                shlex.quote(cookiefile),
-                "--js-runtimes",
-                "\"node:$NODE_PATH\"",
-            ]
-            if YTDLP_YOUTUBE_REMOTE_COMPONENTS:
-                yt_cmd_parts.extend(["--remote-components", shlex.quote(YTDLP_YOUTUBE_REMOTE_COMPONENTS)])
-            if YTDLP_YOUTUBE_FORMAT:
-                yt_cmd_parts.extend(["-f", shlex.quote(YTDLP_YOUTUBE_FORMAT)])
-            if YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT:
-                yt_cmd_parts.extend(["--merge-output-format", shlex.quote(YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT)])
-            # 서비스 내부 임시 경로에 저장해 추론 파이프라인으로 전달한다.
-            yt_cmd_parts.extend(
-                [
-                    "-o",
-                    shlex.quote(str(out_base) + ".%(ext)s"),
-                    shlex.quote(normalized_source_url),
+            for fmt in format_candidates:
+                _clear_download_candidates(out_base)
+
+                yt_cmd_parts: List[str] = [
+                    cli_prefix,
+                    "-vU",
+                    "--cookies",
+                    shlex.quote(cookiefile),
+                    "--js-runtimes",
+                    "\"node:$NODE_PATH\"",
                 ]
-            )
+                if YTDLP_YOUTUBE_REMOTE_COMPONENTS:
+                    yt_cmd_parts.extend(["--remote-components", shlex.quote(YTDLP_YOUTUBE_REMOTE_COMPONENTS)])
+                yt_cmd_parts.extend(["-f", shlex.quote(fmt)])
+                if YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT:
+                    yt_cmd_parts.extend(["--merge-output-format", shlex.quote(YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT)])
+                # 서비스 내부 임시 경로에 저장해 추론 파이프라인으로 전달한다.
+                yt_cmd_parts.extend(
+                    [
+                        "-o",
+                        shlex.quote(str(out_base) + ".%(ext)s"),
+                        shlex.quote(normalized_source_url),
+                    ]
+                )
 
-            yt_cmd = " ".join(yt_cmd_parts)
-            shell_cmd = (
-                "NODE_PATH=\"$(command -v node || command -v nodejs)\"; "
-                "if [ -z \"$NODE_PATH\" ]; then echo \"node runtime not found\" >&2; exit 127; fi; "
-                + yt_cmd
-            )
-            _debug_log(
-                "youtube-cli:run "
-                f"url={normalized_source_url} cookie={bool(cookiefile)} "
-                f"runtime={runtime_value} format={YTDLP_YOUTUBE_FORMAT} "
-                f"cli={cli_prefix} shell_expand=node:$(command -v node)"
-            )
-            proc = _run_yt_dlp_shell_command(shell_cmd, stage="youtube-cli", start_ts=started_at)
-            if proc.returncode == 0:
-                break
+                yt_cmd = " ".join(yt_cmd_parts)
+                shell_cmd = (
+                    "NODE_PATH=\"$(command -v node || command -v nodejs)\"; "
+                    "if [ -z \"$NODE_PATH\" ]; then echo \"node runtime not found\" >&2; exit 127; fi; "
+                    + yt_cmd
+                )
+                _debug_log(
+                    "youtube-cli:run "
+                    f"url={normalized_source_url} cookie={bool(cookiefile)} "
+                    f"runtime={runtime_value} format={fmt} "
+                    f"cli={cli_prefix} shell_expand=node:$(command -v node)"
+                )
+                proc = _run_yt_dlp_shell_command(shell_cmd, stage="youtube-cli", start_ts=started_at)
+                if proc.returncode != 0:
+                    err_text = (proc.stderr or proc.stdout or "").strip() or "unknown error"
+                    cli_errors.append(f"{cli_prefix} fmt={fmt}: {err_text}")
+                    low = err_text.lower()
+                    if "no such option: --js-runtimes" in low:
+                        continue
+                    if _is_format_unavailable_error(low):
+                        continue
+                    continue
 
-            err_text = (proc.stderr or proc.stdout or "").strip() or "unknown error"
-            cli_errors.append(f"{cli_prefix}: {err_text}")
-            low = err_text.lower()
-            if "no such option: --js-runtimes" in low:
-                continue
+                file_path = _pick_latest_video_download(out_base)
+                if file_path is None or not file_path.is_file():
+                    cli_errors.append(f"{cli_prefix} fmt={fmt}: 다운로드 파일을 찾지 못했습니다.")
+                    continue
+
+                if not _can_decode_video_first_frame(file_path):
+                    cli_errors.append(
+                        f"{cli_prefix} fmt={fmt}: 다운로드는 성공했지만 디코더가 첫 프레임을 열지 못했습니다."
+                    )
+                    continue
+
+                size = file_path.stat().st_size
+                if size <= 0:
+                    cli_errors.append(f"{cli_prefix} fmt={fmt}: 다운로드 파일 크기가 0입니다.")
+                    continue
+                if size > max_bytes:
+                    raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
+
+                with open(file_path, "rb") as fp:
+                    content = fp.read()
+
+                return DownloadedMedia(
+                    source_url=source_url,
+                    media_type="video",
+                    filename=file_path.name,
+                    content=content,
+                    extractor="youtube_ytdlp_cli",
+                    title="",
+                )
 
         if proc is None or proc.returncode != 0:
             if cli_errors:
                 raise ValueError(f"yt-dlp CLI 실패: {' | '.join(cli_errors)}")
             raise ValueError("yt-dlp CLI 실패: unknown error")
-
-        file_path = _pick_latest_video_download(out_base)
-        if file_path is None or not file_path.is_file():
-            raise ValueError("YouTube 다운로드가 완료되었지만 영상 파일을 찾지 못했습니다.")
-
-        size = file_path.stat().st_size
-        if size <= 0:
-            raise ValueError("다운로드된 미디어 파일이 비어 있습니다.")
-        if size > max_bytes:
-            raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
-
-        with open(file_path, "rb") as fp:
-            content = fp.read()
-
-        return DownloadedMedia(
-            source_url=source_url,
-            media_type="video",
-            filename=file_path.name,
-            content=content,
-            extractor="youtube_ytdlp_cli",
-            title="",
-        )
+        if cli_errors:
+            raise ValueError(f"yt-dlp CLI 실패: {' | '.join(cli_errors)}")
+        raise ValueError("yt-dlp CLI 실패: unknown error")
 
 
 def _build_format_candidates(source_group: str, source_url: str) -> List[Optional[str]]:

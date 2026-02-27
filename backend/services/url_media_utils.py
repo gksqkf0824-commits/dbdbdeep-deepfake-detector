@@ -2,9 +2,8 @@
 URL 기반 미디어(이미지/영상) 다운로드 서비스.
 
 지원 분기:
-1) YouTube URL 동영상/이미지 추론(yt-dlp CLI 우선, yt-dlp API fallback)
-3) Instagram URL 동영상/이미지 추론(Instaloader + OpenGraph + yt-dlp fallback)
-4) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
+1) Instagram URL 동영상/이미지 추론(Instaloader + OpenGraph + yt-dlp fallback)
+2) 기타 웹사이트 URL 동영상/이미지 추론(직접 다운로드 또는 yt-dlp)
 """
 
 import glob
@@ -93,21 +92,18 @@ def _env_csv(name: str, default: str) -> List[str]:
 URL_MEDIA_MAX_MB = _env_int("URL_MEDIA_MAX_MB", 120, 1)
 URL_MEDIA_TIMEOUT_SEC = _env_int("URL_MEDIA_TIMEOUT_SEC", 60, 5)
 URL_MEDIA_DEBUG = _env_bool("URL_MEDIA_DEBUG", False)
-YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS = _env_int("YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS", 12, 1)
-YTDLP_YOUTUBE_API_MAX_ATTEMPTS = _env_int("YTDLP_YOUTUBE_API_MAX_ATTEMPTS", 16, 1)
-YTDLP_YOUTUBE_META_MAX_VARIANTS = _env_int("YTDLP_YOUTUBE_META_MAX_VARIANTS", 4, 1)
 YTDLP_PROCESS_TIMEOUT_SEC = _env_int("YTDLP_PROCESS_TIMEOUT_SEC", 90, 10)
 YTDLP_TOTAL_TIMEOUT_SEC = _env_int("YTDLP_TOTAL_TIMEOUT_SEC", 240, 30)
 # Backward compatibility: legacy single cookie env is still accepted.
 YTDLP_COOKIEFILE_LEGACY = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_COOKIEFILE = (os.getenv("YTDLP_YOUTUBE_COOKIEFILE") or "").strip()
 YTDLP_INSTAGRAM_COOKIEFILE = (os.getenv("YTDLP_INSTAGRAM_COOKIEFILE") or "").strip()
-YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web")
-YTDLP_YOUTUBE_ALT_CLIENTS = _env_csv("YTDLP_YOUTUBE_ALT_CLIENTS", "ios,mweb,web_safari")
-YTDLP_YOUTUBE_FORMATS = _env_csv("YTDLP_YOUTUBE_FORMATS", "incomplete")
-YTDLP_YOUTUBE_PLAYER_SKIP = _env_csv("YTDLP_YOUTUBE_PLAYER_SKIP", "")
-YTDLP_YOUTUBE_VISITOR_DATA = unquote((os.getenv("YTDLP_YOUTUBE_VISITOR_DATA") or "").strip())
-YTDLP_YOUTUBE_PO_TOKEN = (os.getenv("YTDLP_YOUTUBE_PO_TOKEN") or "").strip()
+YTDLP_YOUTUBE_FORMAT = (
+    os.getenv("YTDLP_YOUTUBE_FORMAT")
+    or "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+).strip()
+YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT = (os.getenv("YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT") or "mp4").strip()
+YTDLP_YOUTUBE_REMOTE_COMPONENTS = (os.getenv("YTDLP_YOUTUBE_REMOTE_COMPONENTS") or "ejs:github").strip()
 
 INSTAGRAM_SESSION_ID = (os.getenv("INSTAGRAM_SESSION_ID") or "").strip()
 INSTAGRAM_USER_AGENT = (os.getenv("INSTAGRAM_USER_AGENT") or _HTTP_USER_AGENT).strip() or _HTTP_USER_AGENT
@@ -143,15 +139,6 @@ def _debug_log(message: str) -> None:
     if not URL_MEDIA_DEBUG:
         return
     logger.info("[url-media] %s", message)
-
-
-def _mask_token(value: str, keep: int = 8) -> str:
-    s = str(value or "").strip()
-    if not s:
-        return s
-    if len(s) <= keep:
-        return "***"
-    return s[:keep] + "...(masked)"
 
 
 def _summarize_err_text(message: str, max_len: int = 240) -> str:
@@ -220,18 +207,6 @@ def _is_youtube_url(source_url: str) -> bool:
     )
 
 
-def _is_youtube_shorts_url(source_url: str) -> bool:
-    if not _is_youtube_url(source_url):
-        return False
-    path = (urlparse(source_url).path or "").lower()
-    return path.startswith("/shorts/")
-
-
-def _is_instagram_url(source_url: str) -> bool:
-    host = _host_from_url(source_url)
-    return _host_matches(host, "instagram.com")
-
-
 _YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
@@ -271,6 +246,20 @@ def _extract_youtube_video_id(source_url: str) -> str:
     if query_v:
         return _sanitize_youtube_video_id(query_v[0])
     return ""
+
+
+def _normalize_youtube_watch_url(source_url: str) -> str:
+    if not _is_youtube_url(source_url):
+        return source_url
+    video_id = _extract_youtube_video_id(source_url)
+    if not video_id:
+        return source_url
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def _is_instagram_url(source_url: str) -> bool:
+    host = _host_from_url(source_url)
+    return _host_matches(host, "instagram.com")
 
 
 def _path_ext_from_url(source_url: str) -> str:
@@ -518,50 +507,8 @@ def _download_direct_media(source_url: str, max_bytes: int) -> DownloadedMedia:
 
 
 # =========================
-# yt-dlp helpers (YouTube / Generic)
+# yt-dlp helpers (Generic / Instagram)
 # =========================
-
-def _ensure_parent_dir(path_obj: Path) -> None:
-    parent = path_obj.parent
-    if parent and not parent.exists():
-        parent.mkdir(parents=True, exist_ok=True)
-
-
-def _detect_node_runtime_path() -> str:
-    node_path = shutil.which("node")
-    if node_path:
-        return node_path
-    nodejs_path = shutil.which("nodejs")
-    if nodejs_path:
-        return nodejs_path
-    return ""
-
-
-def _build_cli_js_runtimes_value() -> str:
-    # env 설정(YTDLP_JS_RUNTIMES)이 있으면 우선하고, 기본값은 node/nodejs 자동 탐지로 보완한다.
-    if YTDLP_JS_RUNTIMES:
-        parts: List[str] = []
-        for runtime, cfg in YTDLP_JS_RUNTIMES.items():
-            name = str(runtime or "").strip()
-            if not name:
-                continue
-            path = ""
-            if isinstance(cfg, dict):
-                path = str(cfg.get("path") or "").strip()
-            if path:
-                parts.append(f"{name}:{path}")
-            else:
-                if name == "node":
-                    detected = _detect_node_runtime_path()
-                    parts.append(f"node:{detected}" if detected else "node")
-                else:
-                    parts.append(name)
-        if parts:
-            return ",".join(parts)
-
-    detected = _detect_node_runtime_path()
-    return f"node:{detected}" if detected else "node"
-
 
 def _resolve_cookiefile_for_source(source_group: str = "generic") -> str:
     group = str(source_group or "generic").strip().lower()
@@ -613,140 +560,47 @@ def _cookiefile_env_hint(source_group: str = "generic") -> str:
     return "cookiefile"
 
 
-def _prepare_writable_cookiefile(tmp_dir: str, strict: bool = False, source_group: str = "youtube") -> str:
+def _ensure_parent_dir(path_obj: Path) -> None:
+    parent = path_obj.parent
+    if parent and not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+def _prepare_writable_cookiefile(tmp_dir: str, source_group: str) -> str:
     cookie_path = _resolve_cookiefile_for_source(source_group)
     if not cookie_path:
         return ""
     if not os.path.isfile(cookie_path):
-        if strict:
-            raise ValueError(f"{_cookiefile_env_hint(source_group)} 파일을 찾을 수 없습니다: {cookie_path}")
         return ""
-
-    dst = os.path.join(tmp_dir, "yt_cli_cookies.txt")
+    dst = os.path.join(tmp_dir, f"yt_{source_group}_cookies.txt")
     shutil.copyfile(cookie_path, dst)
     return dst
 
 
-def _merge_unique_tokens(*iterables: List[str]) -> List[str]:
-    ordered: List[str] = []
-    seen: set[str] = set()
-    for items in iterables:
-        for raw in items:
-            token = str(raw or "").strip()
-            if not token:
-                continue
-            low = token.lower()
-            if low in seen:
-                continue
-            seen.add(low)
-            ordered.append(low)
-    return ordered
+def _detect_node_runtime_path() -> str:
+    node_path = shutil.which("node")
+    if node_path:
+        return node_path
+    nodejs_path = shutil.which("nodejs")
+    if nodejs_path:
+        return nodejs_path
+    return ""
 
 
-def _normalize_youtube_clients(tokens: List[str]) -> List[str]:
-    # yt-dlp 버전에 따라 tv_embedded가 unsupported로 건너뛰어질 수 있어 기본 경로에서는 제외한다.
-    normalized = _merge_unique_tokens(tokens)
-    return [t for t in normalized if t != "tv_embedded"]
-
-
-def _build_youtube_extractor_args_payload(
-    player_clients: Optional[List[str]] = None,
-    include_optional: bool = True,
-) -> Dict[str, List[str]]:
-    clients = _normalize_youtube_clients(
-        [str(c or "").strip().lower() for c in (player_clients or []) if str(c or "").strip()]
-    )
-    if not clients:
-        clients = _normalize_youtube_clients(_merge_unique_tokens(YTDLP_YOUTUBE_CLIENTS, YTDLP_YOUTUBE_ALT_CLIENTS))
-    if not clients:
-        clients = ["android", "web"]
-
-    payload: Dict[str, List[str]] = {
-        "player_client": clients,
-    }
-
-    if include_optional:
-        if YTDLP_YOUTUBE_FORMATS:
-            payload["formats"] = [str(v).strip().lower() for v in YTDLP_YOUTUBE_FORMATS if str(v).strip()]
-
-        if YTDLP_YOUTUBE_PLAYER_SKIP:
-            payload["player_skip"] = [str(v).strip().lower() for v in YTDLP_YOUTUBE_PLAYER_SKIP if str(v).strip()]
-
-        if YTDLP_YOUTUBE_VISITOR_DATA:
-            payload["visitor_data"] = [YTDLP_YOUTUBE_VISITOR_DATA]
-
-        if YTDLP_YOUTUBE_PO_TOKEN:
-            token = YTDLP_YOUTUBE_PO_TOKEN
-            if "+" in token:
-                payload["po_token"] = [token]
-            else:
-                payload["po_token"] = [f"{clients[0]}+{token}"]
-
-    return payload
-
-
-def _youtube_cli_extractor_args_string(player_clients: Optional[List[str]] = None, include_optional: bool = True) -> str:
-    payload = _build_youtube_extractor_args_payload(
-        player_clients=player_clients,
-        include_optional=include_optional,
-    )
-    parts: List[str] = []
-    for key, values in payload.items():
-        cleaned = [str(v).strip() for v in values if str(v).strip()]
-        if not cleaned:
-            continue
-        parts.append(f"{key}={','.join(cleaned)}")
-    if not parts:
-        return "youtube:player_client=android,web"
-    return "youtube:" + ";".join(parts)
-
-
-def _youtube_cli_extractor_args_candidates() -> List[str]:
-    # 첫 시도는 extractor-args를 비워서(=실사용 CLI 명령과 동일) YouTube 기본 추출을 우선한다.
-    candidates: List[str] = [""]
-    seen: set[str] = {""}
-
-    profiles = _youtube_client_profiles()
-    merged_clients = _merge_unique_tokens(*profiles)
-    if merged_clients:
-        profiles = [profiles[0]] + profiles[1:] + [merged_clients]
-
-    for profile in profiles:
-        for include_optional in (True, False):
-            arg = _youtube_cli_extractor_args_string(player_clients=profile, include_optional=include_optional)
-            if arg in seen:
-                continue
-            seen.add(arg)
-            candidates.append(arg)
-
-    raw_minimal = _youtube_cli_extractor_args_string(
-        player_clients=["android", "web"],
-        include_optional=False,
-    )
-    if raw_minimal not in seen:
-        candidates.append(raw_minimal)
-    return candidates
-
-
-def _youtube_cli_format_candidates(has_ffmpeg: bool) -> List[Optional[str]]:
-    if has_ffmpeg:
-        return [
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "bv*+ba/b",
-            "bestvideo*+bestaudio/bestvideo+bestaudio/best",
-            "best",
-            None,
-        ]
-    return [
-        "best",
-        "b",
-        "b*",
-        None,
-    ]
+def _build_cli_js_runtimes_value() -> str:
+    runtime_cfg = YTDLP_JS_RUNTIMES if isinstance(YTDLP_JS_RUNTIMES, dict) else {}
+    node_cfg = runtime_cfg.get("node") if isinstance(runtime_cfg, dict) else None
+    node_path = ""
+    if isinstance(node_cfg, dict):
+        node_path = str(node_cfg.get("path") or "").strip()
+    if not node_path:
+        node_path = _detect_node_runtime_path()
+    return f"node:{node_path}" if node_path else "node"
 
 
 def _clear_download_candidates(base_path: Path) -> None:
-    for candidate in base_path.parent.glob(base_path.stem + ".*"):
+    pattern = base_path.stem + "*"
+    for candidate in base_path.parent.glob(pattern):
         if not candidate.is_file():
             continue
         try:
@@ -755,274 +609,31 @@ def _clear_download_candidates(base_path: Path) -> None:
             continue
 
 
-def _pick_latest_non_image_download(base_path: Path) -> Optional[Path]:
+def _pick_latest_video_download(base_path: Path) -> Optional[Path]:
     candidates = sorted(
-        base_path.parent.glob(base_path.stem + ".*"),
+        base_path.parent.glob(base_path.stem + "*"),
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     )
-    if not candidates:
-        return None
-    selected = candidates[0]
-    ext = selected.suffix.lower().lstrip(".")
-    if ext in _IMAGE_EXTS:
-        return None
-    return selected
-
-
-def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int) -> str:
-    """
-    yt-dlp CLI로 YouTube URL을 local_path 위치로 다운로드한다.
-    yt-dlp는 실제 확장자가 달라질 수 있으므로 템플릿으로 받은 뒤 local_path로 통일한다.
-    """
-    started_at = time.monotonic()
-    normalized_source_url = str(source_url or "").strip()
-    if _is_youtube_shorts_url(normalized_source_url):
-        video_id = _extract_youtube_video_id(normalized_source_url)
-        if video_id:
-            normalized_source_url = f"https://www.youtube.com/watch?v={video_id}"
-    _debug_log(
-        "youtube-cli:start "
-        f"source={source_url} normalized={normalized_source_url} "
-        f"max_bytes={max_bytes} timeout={URL_MEDIA_TIMEOUT_SEC}s"
-    )
-
-    p = Path(local_path)
-    _ensure_parent_dir(p)
-    template = str(p.with_suffix("")) + ".%(ext)s"
-
-    has_ffmpeg = bool(shutil.which("ffmpeg"))
-    js_runtimes_value = _build_cli_js_runtimes_value()
-    base_cmd: List[str] = [
-        "yt-dlp",
-        "--no-playlist",
-        "--no-part",
-        "--check-formats",
-        "--quiet",
-        "--no-warnings",
-        "--no-progress",
-        "--js-runtimes",
-        js_runtimes_value,
-        "--remote-components",
-        "ejs:github",
-        "--socket-timeout",
-        str(URL_MEDIA_TIMEOUT_SEC),
-        "--max-filesize",
-        str(max_bytes),
-        "--retries",
-        "2",
-        "--fragment-retries",
-        "2",
-        "--restrict-filenames",
-        "-o",
-        template,
-    ]
-
-    extractor_args_candidates = _youtube_cli_extractor_args_candidates()
-    format_candidates = _youtube_cli_format_candidates(has_ffmpeg=has_ffmpeg)
-    cookie_candidates: List[str] = []
-    if _resolve_cookiefile_for_source("youtube"):
-        try:
-            prepared = _prepare_writable_cookiefile(str(p.parent), strict=False, source_group="youtube")
-            if prepared:
-                cookie_candidates.append(prepared)
-        except Exception as exc:
-            _debug_log(f"youtube-cli:cookie-prepare-fail err={_summarize_err_text(exc)}")
-    cookie_candidates.append("")
-    _debug_log(
-        "youtube-cli:config "
-        f"js_runtimes={js_runtimes_value} has_ffmpeg={has_ffmpeg} "
-        f"cookie_candidates={len(cookie_candidates)} "
-        f"clients={','.join(YTDLP_YOUTUBE_CLIENTS)} alt_clients={','.join(YTDLP_YOUTUBE_ALT_CLIENTS)} "
-        f"visitor_data={_mask_token(YTDLP_YOUTUBE_VISITOR_DATA)} po_token={_mask_token(YTDLP_YOUTUBE_PO_TOKEN)}"
-    )
-
-    # 1) 사용자 수동 커맨드와 동일한 1차 경로를 먼저 시도한다.
-    # yt-dlp --cookies ... --js-runtimes node:... --remote-components ejs:github
-    #       -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-    #       --merge-output-format mp4
-    primary_format = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-    primary_last_error = ""
-    for idx, cookiefile in enumerate(cookie_candidates, start=1):
-        _clear_download_candidates(p)
-
-        cmd = [
-            "yt-dlp",
-            "--js-runtimes",
-            js_runtimes_value,
-            "--remote-components",
-            "ejs:github",
-            "-f",
-            primary_format,
-            "--no-playlist",
-            "--no-part",
-            "--socket-timeout",
-            str(URL_MEDIA_TIMEOUT_SEC),
-            "--max-filesize",
-            str(max_bytes),
-            "--restrict-filenames",
-            "-o",
-            template,
-        ]
-        if cookiefile:
-            cmd[1:1] = ["--cookies", cookiefile]
-        if has_ffmpeg:
-            cmd += ["--merge-output-format", "mp4"]
-        cmd.append(normalized_source_url)
-        _debug_log(
-            "youtube-cli:primary-attempt "
-            f"idx={idx}/{len(cookie_candidates)} use_cookie={bool(cookiefile)} format={primary_format}"
-        )
-
-        proc = _run_yt_dlp_command(cmd, stage="youtube-cli:primary", start_ts=started_at)
-        if proc.returncode == 0:
-            selected = _pick_latest_non_image_download(p)
-            if selected is not None:
-                try:
-                    size = selected.stat().st_size
-                except Exception:
-                    size = -1
-                _debug_log(f"youtube-cli:primary-success path={selected} size={size}")
-                return str(selected)
-            primary_last_error = "yt-dlp가 YouTube URL에서 이미지 포맷만 반환했습니다."
-            _debug_log("youtube-cli:primary-image-only")
+    best: Optional[Path] = None
+    best_size = -1
+    for candidate in candidates:
+        if not candidate.is_file():
             continue
-
-        primary_last_error = (proc.stderr or proc.stdout or "").strip()
-        _debug_log(
-            "youtube-cli:primary-fail "
-            f"returncode={proc.returncode} err={_summarize_err_text(primary_last_error)}"
-        )
-        if _is_login_or_rate_limit_error(primary_last_error):
-            break
-
-    last_error = ""
-    saw_login_error = False
-    attempt_count = 0
-    same_error_streak = 0
-    prev_error_sig = ""
-    stop_due_to_repeat = False
-    for cookiefile in cookie_candidates:
-        cookie_specific_login_error = False
-        for extractor_args in extractor_args_candidates:
-            for fmt in format_candidates:
-                attempt_count += 1
-                if attempt_count > YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS:
-                    break
-                _clear_download_candidates(p)
-
-                cmd = list(base_cmd)
-                if cookiefile:
-                    cmd += ["--cookies", cookiefile]
-                if extractor_args:
-                    cmd += ["--extractor-args", extractor_args]
-                if fmt:
-                    cmd += ["-f", fmt]
-                    if has_ffmpeg:
-                        cmd += ["--merge-output-format", "mp4"]
-                cmd.append(normalized_source_url)
-                _debug_log(
-                    "youtube-cli:fallback-attempt "
-                    f"num={attempt_count}/{YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS} "
-                    f"use_cookie={bool(cookiefile)} "
-                    f"extractor_args={'yes' if extractor_args else 'no'} fmt={fmt or 'none'}"
-                )
-
-                proc = _run_yt_dlp_command(cmd, stage="youtube-cli:fallback", start_ts=started_at)
-                if proc.returncode == 0:
-                    selected = _pick_latest_non_image_download(p)
-                    if selected is None:
-                        last_error = "yt-dlp가 YouTube URL에서 이미지 포맷만 반환했습니다."
-                        _debug_log("youtube-cli:fallback-image-only")
-                        continue
-
-                    try:
-                        size = selected.stat().st_size
-                    except Exception:
-                        size = -1
-                    _debug_log(f"youtube-cli:fallback-success path={selected} size={size}")
-                    return str(selected)
-
-                last_error = (proc.stderr or proc.stdout or "").strip()
-                _debug_log(
-                    "youtube-cli:fallback-fail "
-                    f"returncode={proc.returncode} err={_summarize_err_text(last_error)}"
-                )
-                sig = _error_signature(last_error)
-                if sig and sig == prev_error_sig:
-                    same_error_streak += 1
-                else:
-                    same_error_streak = 1 if sig else 0
-                    prev_error_sig = sig
-                if same_error_streak >= 3:
-                    stop_due_to_repeat = True
-                    _debug_log("youtube-cli:fallback-stop repeated_same_error>=3")
-                    break
-                if _is_login_or_rate_limit_error(last_error):
-                    saw_login_error = True
-                    if cookiefile and _is_cookie_invalid_error(last_error):
-                        cookie_specific_login_error = True
-                    break
-                if _is_format_unavailable_error(last_error):
-                    continue
-            if attempt_count > YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS or stop_due_to_repeat:
-                break
-            if saw_login_error:
-                break
-        if attempt_count > YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS or stop_due_to_repeat:
-            break
-        if saw_login_error:
-            # 쿠키가 명백히 invalid인 경우에만 "쿠키 없는 경로"를 한 번 더 시도한다.
-            if cookie_specific_login_error and cookiefile:
-                continue
-            break
-
-    if saw_login_error:
-        _debug_log("youtube-cli:stop login_or_rate_limit_detected")
-        logger.warning(
-            "youtube-download stop login_or_rate_limit elapsed=%.1fs",
-            _elapsed_sec(started_at),
-        )
-        raise ValueError(_login_or_rate_limit_detail(source_url))
-    _debug_log(
-        "youtube-cli:stop failed "
-        f"last_error={_summarize_err_text(last_error or primary_last_error or 'unknown error')}"
-    )
-    logger.warning(
-        "youtube-download failed elapsed=%.1fs err=%s",
-        _elapsed_sec(started_at),
-        _summarize_err_text(last_error or primary_last_error or "unknown error"),
-    )
-    raise ValueError(f"yt-dlp CLI 실패: {last_error or primary_last_error or 'unknown error'}")
-
-
-def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> DownloadedMedia:
-    with tempfile.TemporaryDirectory(prefix="yt-cli-") as tmp_dir:
-        out_path = Path(tmp_dir) / "youtube_media.mp4"
-        file_path = _download_youtube_to_path(source_url, out_path, max_bytes=max_bytes)
-        if not os.path.isfile(file_path):
-            raise ValueError("yt-dlp CLI 다운로드 파일이 없습니다.")
-
-        size = os.path.getsize(file_path)
-        if size <= 0:
-            raise ValueError("다운로드된 미디어 파일이 비어 있습니다.")
-        if size > max_bytes:
-            raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
-
-        with open(file_path, "rb") as fp:
-            content = fp.read()
-
-        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
-        media_type = "image" if ext in _IMAGE_EXTS else "video"
-        filename = os.path.basename(file_path)
-        return DownloadedMedia(
-            source_url=source_url,
-            media_type=media_type,
-            filename=filename,
-            content=content,
-            extractor="youtube_ytdlp_cli",
-            title="",
-        )
+        name = candidate.name.lower()
+        if name.endswith((".part", ".ytdl", ".json", ".description", ".txt", ".vtt", ".srt")):
+            continue
+        ext = candidate.suffix.lower().lstrip(".")
+        if ext not in _VIDEO_EXTS:
+            continue
+        try:
+            size = candidate.stat().st_size
+        except Exception:
+            size = 0
+        if size > best_size:
+            best = candidate
+            best_size = size
+    return best
 
 def _parse_js_runtimes(raw: str) -> Dict[str, Dict[str, str]]:
     """
@@ -1118,99 +729,96 @@ def _apply_js_runtime_option(opts: Dict[str, Any]) -> None:
         opts["js_runtimes"] = YTDLP_JS_RUNTIMES
 
 
-def _apply_youtube_extractor_option(
-    opts: Dict[str, Any],
-    player_clients: Optional[List[str]] = None,
-    include_optional: bool = True,
-) -> None:
-    extractor_args = dict(opts.get("extractor_args") or {})
-    yt_args = dict(extractor_args.get("youtube") or {})
-    payload = _build_youtube_extractor_args_payload(
-        player_clients=player_clients,
-        include_optional=include_optional,
-    )
-    for key, values in payload.items():
-        cleaned = [str(v).strip() for v in values if str(v).strip()]
-        if cleaned:
-            yt_args[key] = cleaned
-    extractor_args["youtube"] = yt_args
-    opts["extractor_args"] = extractor_args
+def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> DownloadedMedia:
+    started_at = time.monotonic()
+    normalized_source_url = _normalize_youtube_watch_url(source_url)
 
+    with tempfile.TemporaryDirectory(prefix="yt-cli-") as tmp_dir:
+        out_base = Path(tmp_dir) / "youtube_media"
+        _ensure_parent_dir(out_base)
+        _clear_download_candidates(out_base)
 
-def _youtube_client_profiles() -> List[List[str]]:
-    profiles: List[List[str]] = []
-    seen: set[Tuple[str, ...]] = set()
+        cmd: List[str] = [
+            "yt-dlp",
+            "--no-playlist",
+            "--no-part",
+            "--check-formats",
+            "--socket-timeout",
+            str(URL_MEDIA_TIMEOUT_SEC),
+            "--max-filesize",
+            str(max_bytes),
+            "--retries",
+            "2",
+            "--fragment-retries",
+            "2",
+            "--restrict-filenames",
+            "--js-runtimes",
+            _build_cli_js_runtimes_value(),
+        ]
+        if YTDLP_YOUTUBE_REMOTE_COMPONENTS:
+            cmd += ["--remote-components", YTDLP_YOUTUBE_REMOTE_COMPONENTS]
 
-    for raw in (YTDLP_YOUTUBE_CLIENTS, YTDLP_YOUTUBE_ALT_CLIENTS):
-        profile = _normalize_youtube_clients([str(c or "").strip().lower() for c in raw if str(c or "").strip()])
-        if not profile:
-            continue
-        key = tuple(profile)
-        if key in seen:
-            continue
-        seen.add(key)
-        profiles.append(profile)
-
-    if not profiles:
-        profiles.append(["android", "web"])
-    return profiles
-
-
-def _build_youtube_option_variants(base_opts: Dict[str, Any], tmp_dir: str) -> List[Dict[str, Any]]:
-    variants: List[Dict[str, Any]] = []
-    profiles = _youtube_client_profiles()
-    has_youtube_cookie = bool(_resolve_cookiefile_for_source("youtube"))
-
-    # yt-dlp CLI 성공 케이스와 맞추기 위해 extractor_args 없는 raw 옵션을 가장 먼저 시도한다.
-    raw_opts = dict(base_opts)
-    if has_youtube_cookie:
+        cookiefile = ""
         try:
-            _apply_cookiefile_option(raw_opts, tmp_dir, source_group="youtube")
+            cookiefile = _prepare_writable_cookiefile(tmp_dir, source_group="youtube")
         except Exception:
-            pass
-    variants.append(raw_opts)
+            cookiefile = ""
+        if cookiefile:
+            cmd += ["--cookies", cookiefile]
 
-    if has_youtube_cookie:
-        for clients in profiles:
-            for include_optional in (True, False):
-                opts = dict(base_opts)
-                try:
-                    _apply_cookiefile_option(opts, tmp_dir, source_group="youtube")
-                except Exception:
-                    continue
-                _apply_youtube_extractor_option(
-                    opts,
-                    player_clients=clients,
-                    include_optional=include_optional,
-                )
-                variants.append(opts)
+        if YTDLP_YOUTUBE_FORMAT:
+            cmd += ["-f", YTDLP_YOUTUBE_FORMAT]
+        if YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT:
+            cmd += ["--merge-output-format", YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT]
 
-    for clients in profiles:
-        for include_optional in (True, False):
-            opts = dict(base_opts)
-            _apply_youtube_extractor_option(
-                opts,
-                player_clients=clients,
-                include_optional=include_optional,
-            )
-            variants.append(opts)
+        cmd += [
+            "-o",
+            str(out_base) + ".%(ext)s",
+            normalized_source_url,
+        ]
 
-    return variants
+        _debug_log(
+            "youtube-cli:run "
+            f"url={normalized_source_url} cookie={bool(cookiefile)} "
+            f"runtime={_build_cli_js_runtimes_value()} format={YTDLP_YOUTUBE_FORMAT}"
+        )
+        proc = _run_yt_dlp_command(cmd, stage="youtube-cli", start_ts=started_at)
+        if proc.returncode != 0:
+            err_text = (proc.stderr or proc.stdout or "").strip()
+            raise ValueError(f"yt-dlp CLI 실패: {err_text or 'unknown error'}")
+
+        file_path = _pick_latest_video_download(out_base)
+        if file_path is None or not file_path.is_file():
+            raise ValueError("YouTube 다운로드가 완료되었지만 영상 파일을 찾지 못했습니다.")
+
+        size = file_path.stat().st_size
+        if size <= 0:
+            raise ValueError("다운로드된 미디어 파일이 비어 있습니다.")
+        if size > max_bytes:
+            raise ValueError(f"다운로드한 미디어가 제한 용량({URL_MEDIA_MAX_MB}MB)을 초과했습니다.")
+
+        with open(file_path, "rb") as fp:
+            content = fp.read()
+
+        return DownloadedMedia(
+            source_url=source_url,
+            media_type="video",
+            filename=file_path.name,
+            content=content,
+            extractor="youtube_ytdlp_cli",
+            title="",
+        )
 
 
 def _build_format_candidates(source_group: str, source_url: str) -> List[Optional[str]]:
     low = source_url.lower()
     if source_group == "youtube":
         return [
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            None,
-            "best/b",
+            YTDLP_YOUTUBE_FORMAT or "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "best[ext=mp4]/best",
             "best",
-            "best[ext=mp4]/best[ext=webm]/best/b",
-            "bv*+ba/b",
-            "bestvideo*+bestaudio/bestvideo+bestaudio/best",
+            None,
         ]
-
     if source_group == "instagram":
         if "/reel/" in low or "/reels/" in low:
             return [
@@ -1297,9 +905,8 @@ def _login_or_rate_limit_detail(source_url: str = "") -> str:
     if _is_youtube_url(source_url):
         return (
             "유튜브 접근이 제한되었습니다(봇 확인/로그인 필요). "
-            "yt-dlp 경로로 재시도했지만 실패했습니다. "
-            "유효한 YouTube 쿠키를 재발급해 YTDLP_YOUTUBE_COOKIEFILE로 설정하고, "
-            "YTDLP_YOUTUBE_CLIENTS에서 tv_embedded를 제외해 주세요."
+            "유효한 YouTube 쿠키를 YTDLP_YOUTUBE_COOKIEFILE로 설정하고 "
+            "node 런타임/yt-dlp 설정을 확인해 주세요."
         )
     if _is_instagram_url(source_url):
         return (
@@ -1451,9 +1058,7 @@ def _download_by_entry_format_urls(
             continue
 
         headers = {"User-Agent": _HTTP_USER_AGENT}
-        if _is_youtube_url(source_url):
-            headers["Referer"] = "https://www.youtube.com/"
-        elif _is_instagram_url(source_url):
+        if _is_instagram_url(source_url):
             headers["Referer"] = "https://www.instagram.com/"
 
         try:
@@ -1483,9 +1088,7 @@ def _download_by_entry_format_urls(
 
         extractor = str(entry.get("extractor_key") or entry.get("extractor") or "")
         if not extractor:
-            if source_group == "youtube":
-                extractor = "youtube_ytdlp_format_url"
-            elif source_group == "instagram":
+            if source_group == "instagram":
                 extractor = "instagram_ytdlp_format_url"
             else:
                 extractor = "generic_ytdlp_format_url"
@@ -1505,12 +1108,13 @@ def _download_by_entry_format_urls(
 
 def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> DownloadedMedia:
     YoutubeDL = _load_yt_dlp_cls()
-    treat_as_youtube = _is_youtube_url(source_url)
     started_at = time.monotonic()
     _debug_log(
-        f"ytdlp-api:start source_group={source_group} treat_as_youtube={treat_as_youtube} "
-        f"source={source_url}"
+        f"ytdlp-api:start source_group={source_group} source={source_url}"
     )
+    http_headers: Dict[str, str] = {"User-Agent": _HTTP_USER_AGENT}
+    if source_group == "youtube":
+        http_headers["Referer"] = "https://www.youtube.com/"
 
     with tempfile.TemporaryDirectory(prefix="url-media-") as tmp_dir:
         base_opts: Dict[str, Any] = {
@@ -1527,43 +1131,28 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
             "restrictfilenames": True,
             "overwrites": True,
             "skip_download": False,
-            "http_headers": {"User-Agent": _HTTP_USER_AGENT},
+            "http_headers": http_headers,
             "retries": 2,
             "fragment_retries": 2,
         }
         _apply_js_runtime_option(base_opts)
 
         format_candidates = _build_format_candidates(source_group=source_group, source_url=source_url)
-
-        option_variants: List[Dict[str, Any]]
-        if source_group == "youtube" or treat_as_youtube:
-            option_variants = _build_youtube_option_variants(base_opts=base_opts, tmp_dir=tmp_dir)
-        else:
-            opts = dict(base_opts)
-            _apply_cookiefile_option(opts, tmp_dir, source_group=source_group)
-            option_variants = [opts]
+        opts = dict(base_opts)
+        _apply_cookiefile_option(opts, tmp_dir, source_group=source_group)
+        option_variants: List[Dict[str, Any]] = [opts]
         _debug_log(
             "ytdlp-api:config "
-            f"variants={len(option_variants)} formats={len(format_candidates)} "
-            f"api_max_attempts={YTDLP_YOUTUBE_API_MAX_ATTEMPTS}"
+            f"variants={len(option_variants)} formats={len(format_candidates)}"
         )
 
         info = None
         last_error: Optional[Exception] = None
         saw_login_error = False
-        attempt_count = 0
         for variant_opts in option_variants:
             for fmt in format_candidates:
                 _ensure_time_budget(started_at, stage="ytdlp-api")
-                if treat_as_youtube:
-                    attempt_count += 1
-                    if attempt_count > YTDLP_YOUTUBE_API_MAX_ATTEMPTS:
-                        break
-                _debug_log(
-                    "ytdlp-api:attempt "
-                    f"num={attempt_count if treat_as_youtube else '-'} "
-                    f"fmt={fmt or 'none'}"
-                )
+                _debug_log(f"ytdlp-api:attempt fmt={fmt or 'none'}")
                 try:
                     opts = dict(variant_opts)
                     if fmt:
@@ -1586,38 +1175,10 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
                         saw_login_error = True
                         break
                     raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {exc}") from exc
-            if treat_as_youtube and attempt_count > YTDLP_YOUTUBE_API_MAX_ATTEMPTS:
-                break
             if saw_login_error:
                 break
             if info is not None:
                 break
-
-        if info is None and treat_as_youtube and not saw_login_error:
-            # format expression이 전부 실패한 경우 메타데이터의 실제 스트림 URL로 한 번 더 시도
-            for variant_opts in option_variants[:YTDLP_YOUTUBE_META_MAX_VARIANTS]:
-                _ensure_time_budget(started_at, stage="ytdlp-api-meta-fallback")
-                try:
-                    _debug_log("ytdlp-api:meta-fallback-attempt")
-                    meta_opts = dict(variant_opts)
-                    meta_opts["skip_download"] = True
-                    meta_opts["simulate"] = True
-                    meta_opts.pop("format", None)
-                    with YoutubeDL(meta_opts) as ydl:
-                        meta_info = ydl.extract_info(source_url, download=False)
-                    meta_entry = _pick_primary_entry(meta_info)
-                    if meta_entry:
-                        _debug_log("ytdlp-api:meta-fallback-success")
-                        return _download_by_entry_format_urls(
-                            source_url=source_url,
-                            entry=meta_entry,
-                            max_bytes=max_bytes,
-                            source_group=source_group,
-                        )
-                except Exception as exc:
-                    last_error = exc
-                    _debug_log(f"ytdlp-api:meta-fallback-fail err={_summarize_err_text(exc)}")
-                    continue
 
         if info is None:
             if saw_login_error or _is_login_or_rate_limit_error(str(last_error or "")):
@@ -1649,9 +1210,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
         media_type = _detect_media_type(entry, file_path)
         extractor = str(entry.get("extractor_key") or entry.get("extractor") or "")
         if not extractor:
-            if source_group == "youtube":
-                extractor = "youtube_ytdlp"
-            elif source_group == "instagram":
+            if source_group == "instagram":
                 extractor = "instagram_ytdlp"
             else:
                 extractor = "generic_ytdlp"
@@ -1884,17 +1443,10 @@ def download_media_from_url(source_url: str) -> DownloadedMedia:
             _debug_log(f"branch youtube api_fail err={_summarize_err_text(ytdlp_exc)}")
             if _is_login_or_rate_limit_error(str(ytdlp_exc)):
                 raise ValueError(_login_or_rate_limit_detail(validated_url)) from ytdlp_exc
-            try:
-                return _download_with_ytdlp(validated_url, max_bytes=max_bytes, source_group="generic")
-            except Exception as generic_exc:
-                youtube_errors.append(f"yt-dlp/generic: {generic_exc}")
-                _debug_log(f"branch youtube generic_fail err={_summarize_err_text(generic_exc)}")
-                if _is_login_or_rate_limit_error(str(ytdlp_exc)) or _is_login_or_rate_limit_error(str(generic_exc)):
-                    raise ValueError(_login_or_rate_limit_detail(validated_url)) from generic_exc
-                raise ValueError(
-                    "YouTube URL 처리 실패(yt-dlp CLI + yt-dlp API + generic fallback). "
-                    + " | ".join(youtube_errors)
-                ) from generic_exc
+            raise ValueError(
+                "YouTube URL 처리 실패(yt-dlp CLI + yt-dlp API fallback). "
+                + " | ".join(youtube_errors)
+            ) from ytdlp_exc
 
     # 기타 웹사이트: 직링크면 direct, 아니면 yt-dlp generic
     if _looks_like_direct_media_url(validated_url):

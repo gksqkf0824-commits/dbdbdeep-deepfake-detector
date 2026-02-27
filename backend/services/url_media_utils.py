@@ -11,8 +11,10 @@ import json
 import os
 import random
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -31,7 +33,6 @@ _HTTP_USER_AGENT = (
 )
 
 logger = get_logger(__name__)
-_YTDLP_HELP_TEXT_CACHE: Optional[str] = None
 
 
 class _SilentYTDLPLogger:
@@ -162,11 +163,11 @@ def _ensure_time_budget(start_ts: float, stage: str) -> None:
         )
 
 
-def _run_yt_dlp_command(cmd: List[str], stage: str, start_ts: float) -> subprocess.CompletedProcess:
+def _run_yt_dlp_shell_command(command: str, stage: str, start_ts: float) -> subprocess.CompletedProcess:
     _ensure_time_budget(start_ts, stage=stage)
     try:
         return subprocess.run(
-            cmd,
+            ["sh", "-lc", command],
             capture_output=True,
             text=True,
             timeout=YTDLP_PROCESS_TIMEOUT_SEC,
@@ -177,6 +178,7 @@ def _run_yt_dlp_command(cmd: List[str], stage: str, start_ts: float) -> subproce
             f"{stage} 실행 타임아웃({YTDLP_PROCESS_TIMEOUT_SEC}s) "
             f"(elapsed={elapsed:.1f}s)"
         ) from exc
+
 
 def _validate_source_url(source_url: str) -> str:
     s = (source_url or "").strip()
@@ -614,6 +616,28 @@ def _build_cli_js_runtimes_value() -> str:
     return f"node:{node_path}" if node_path else "node"
 
 
+def _yt_dlp_cli_prefix_candidates() -> List[str]:
+    candidates: List[str] = ["yt-dlp"]
+
+    py_exec = str(sys.executable or "").strip()
+    if py_exec:
+        candidates.append(f"{shlex.quote(py_exec)} -m yt_dlp")
+
+    venv_cli = "/opt/venv/bin/yt-dlp"
+    if os.path.isfile(venv_cli):
+        candidates.append(shlex.quote(venv_cli))
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for cand in candidates:
+        key = cand.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(cand)
+    return deduped
+
+
 def _clear_download_candidates(base_path: Path) -> None:
     pattern = base_path.stem + "*"
     for candidate in base_path.parent.glob(pattern):
@@ -745,31 +769,6 @@ def _apply_js_runtime_option(opts: Dict[str, Any]) -> None:
         opts["js_runtimes"] = YTDLP_JS_RUNTIMES
 
 
-def _yt_dlp_cli_help_text() -> str:
-    global _YTDLP_HELP_TEXT_CACHE
-    if _YTDLP_HELP_TEXT_CACHE is not None:
-        return _YTDLP_HELP_TEXT_CACHE
-    try:
-        proc = subprocess.run(
-            ["yt-dlp", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        text = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    except Exception:
-        text = ""
-    _YTDLP_HELP_TEXT_CACHE = text.lower()
-    return _YTDLP_HELP_TEXT_CACHE
-
-
-def _yt_dlp_cli_supports_option(option_name: str) -> bool:
-    opt = str(option_name or "").strip().lower()
-    if not opt:
-        return False
-    return opt in _yt_dlp_cli_help_text()
-
-
 def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> DownloadedMedia:
     started_at = time.monotonic()
     normalized_source_url = _normalize_youtube_watch_url(source_url)
@@ -779,73 +778,76 @@ def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> Downloa
         _ensure_parent_dir(out_base)
         _clear_download_candidates(out_base)
 
-        cmd: List[str] = [
-            "yt-dlp",
-            "--no-playlist",
-            "--no-part",
-            "--check-formats",
-            "--socket-timeout",
-            str(URL_MEDIA_TIMEOUT_SEC),
-            "--max-filesize",
-            str(max_bytes),
-            "--retries",
-            "2",
-            "--fragment-retries",
-            "2",
-            "--restrict-filenames",
-        ]
-        runtime_value = _build_cli_js_runtimes_value()
-        if _yt_dlp_cli_supports_option("--js-runtimes"):
-            cmd += ["--js-runtimes", runtime_value]
-        else:
-            logger.warning(
-                "yt-dlp CLI가 --js-runtimes 옵션을 지원하지 않습니다. "
-                "구버전일 수 있으니 최신 버전으로 업데이트를 권장합니다."
-            )
-
-        if YTDLP_YOUTUBE_REMOTE_COMPONENTS:
-            if _yt_dlp_cli_supports_option("--remote-components"):
-                cmd += ["--remote-components", YTDLP_YOUTUBE_REMOTE_COMPONENTS]
-            else:
-                logger.warning(
-                    "yt-dlp CLI가 --remote-components 옵션을 지원하지 않습니다. "
-                    "구버전일 수 있으니 최신 버전으로 업데이트를 권장합니다."
-                )
-
         cookiefile = ""
         try:
             cookiefile = _prepare_writable_cookiefile(tmp_dir, source_group="youtube")
         except Exception:
             cookiefile = ""
-        if cookiefile:
-            cmd += ["--cookies", cookiefile]
+        if not cookiefile:
+            raise ValueError(
+                "YouTube 쿠키 파일을 찾지 못했습니다. "
+                "YTDLP_YOUTUBE_COOKIEFILE을 확인해 주세요."
+            )
+        runtime_value = _build_cli_js_runtimes_value()
 
-        if YTDLP_YOUTUBE_FORMAT:
-            cmd += ["-f", YTDLP_YOUTUBE_FORMAT]
-        if YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT:
-            cmd += ["--merge-output-format", YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT]
+        cli_errors: List[str] = []
+        proc: Optional[subprocess.CompletedProcess] = None
 
-        cmd += [
-            "-o",
-            str(out_base) + ".%(ext)s",
-            normalized_source_url,
-        ]
+        for cli_prefix in _yt_dlp_cli_prefix_candidates():
+            cmd_parts: List[str] = [
+                "NODE_PATH=\"$(command -v node || command -v nodejs)\"",
+                "if [ -z \"$NODE_PATH\" ]; then echo \"node runtime not found\" >&2; exit 127; fi",
+                cli_prefix,
+                "--no-playlist",
+                "--no-part",
+                "--socket-timeout",
+                str(URL_MEDIA_TIMEOUT_SEC),
+                "--max-filesize",
+                str(max_bytes),
+                "--retries",
+                "2",
+                "--fragment-retries",
+                "2",
+                "--restrict-filenames",
+                "--cookies",
+                shlex.quote(cookiefile),
+                "--js-runtimes",
+                "\"node:$NODE_PATH\"",
+            ]
+            if YTDLP_YOUTUBE_REMOTE_COMPONENTS:
+                cmd_parts.extend(["--remote-components", shlex.quote(YTDLP_YOUTUBE_REMOTE_COMPONENTS)])
+            if YTDLP_YOUTUBE_FORMAT:
+                cmd_parts.extend(["-f", shlex.quote(YTDLP_YOUTUBE_FORMAT)])
+            if YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT:
+                cmd_parts.extend(["--merge-output-format", shlex.quote(YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT)])
+            cmd_parts.extend(
+                [
+                    "-o",
+                    shlex.quote(str(out_base) + ".%(ext)s"),
+                    shlex.quote(normalized_source_url),
+                ]
+            )
+            shell_cmd = " ".join(cmd_parts)
+            _debug_log(
+                "youtube-cli:run "
+                f"url={normalized_source_url} cookie={bool(cookiefile)} "
+                f"runtime={runtime_value} format={YTDLP_YOUTUBE_FORMAT} "
+                f"cli={cli_prefix} shell_expand=node:$(command -v node)"
+            )
+            proc = _run_yt_dlp_shell_command(shell_cmd, stage="youtube-cli", start_ts=started_at)
+            if proc.returncode == 0:
+                break
 
-        _debug_log(
-            "youtube-cli:run "
-            f"url={normalized_source_url} cookie={bool(cookiefile)} "
-            f"runtime={runtime_value} format={YTDLP_YOUTUBE_FORMAT}"
-        )
-        proc = _run_yt_dlp_command(cmd, stage="youtube-cli", start_ts=started_at)
-        if proc.returncode != 0:
-            err_text = (proc.stderr or proc.stdout or "").strip()
+            err_text = (proc.stderr or proc.stdout or "").strip() or "unknown error"
+            cli_errors.append(f"{cli_prefix}: {err_text}")
             low = err_text.lower()
-            if "no such option: --js-runtimes" in low or "no such option: --remote-components" in low:
-                raise ValueError(
-                    "현재 서버의 yt-dlp CLI가 필요한 옵션(--js-runtimes/--remote-components)을 지원하지 않습니다. "
-                    "컨테이너의 yt-dlp를 최신 버전으로 업데이트해 주세요."
-                )
-            raise ValueError(f"yt-dlp CLI 실패: {err_text or 'unknown error'}")
+            if "no such option: --js-runtimes" in low:
+                continue
+
+        if proc is None or proc.returncode != 0:
+            if cli_errors:
+                raise ValueError(f"yt-dlp CLI 실패: {' | '.join(cli_errors)}")
+            raise ValueError("yt-dlp CLI 실패: unknown error")
 
         file_path = _pick_latest_video_download(out_base)
         if file_path is None or not file_path.is_file():

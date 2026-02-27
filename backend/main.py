@@ -145,12 +145,6 @@ async def analyze_url(
 ):
     _require_model_ready()
     target_url = (source_url or image_url or "").strip()
-    logger.info(
-        "api:/analyze-url source_url=%r image_url=%r target_url=%r",
-        source_url,
-        image_url,
-        target_url,
-    )
     if not target_url:
         raise HTTPException(status_code=400, detail="URL을 입력해 주세요. (source_url 또는 image_url)")
 

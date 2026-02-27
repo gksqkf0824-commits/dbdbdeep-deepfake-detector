@@ -1,18 +1,19 @@
 # syntax=docker/dockerfile:1.7
 
 # -------- 1) build stage --------
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 AS build
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive \
     VENV_PATH=/opt/venv \
     UV_LINK_MODE=copy
 WORKDIR /w
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-venv python3-dev \
     build-essential g++ cmake \
     ca-certificates \
- && update-ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && update-ca-certificates
 
 COPY --from=ghcr.io/astral-sh/uv:0.6.10 /uv /uvx /bin/
 
@@ -41,7 +42,9 @@ ARG NODE_VERSION=20.19.0
 WORKDIR /app
 
 # 런타임 최소 의존성(opencv 등)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     libgl1 libglib2.0-0 \
     ca-certificates ffmpeg curl xz-utils \
@@ -55,8 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz \
  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
  && rm -f /tmp/node.tar.xz \
- && node --version \
- && rm -rf /var/lib/apt/lists/*
+ && node --version
 
 # 빌드 stage에서 준비한 Python 환경 복사
 COPY --from=build "${VENV_PATH}" "${VENV_PATH}"

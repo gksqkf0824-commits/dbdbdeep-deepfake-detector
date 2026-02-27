@@ -96,6 +96,8 @@ URL_MEDIA_DEBUG = _env_bool("URL_MEDIA_DEBUG", False)
 YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS = _env_int("YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS", 12, 1)
 YTDLP_YOUTUBE_API_MAX_ATTEMPTS = _env_int("YTDLP_YOUTUBE_API_MAX_ATTEMPTS", 16, 1)
 YTDLP_YOUTUBE_META_MAX_VARIANTS = _env_int("YTDLP_YOUTUBE_META_MAX_VARIANTS", 4, 1)
+YTDLP_PROCESS_TIMEOUT_SEC = _env_int("YTDLP_PROCESS_TIMEOUT_SEC", 90, 10)
+YTDLP_TOTAL_TIMEOUT_SEC = _env_int("YTDLP_TOTAL_TIMEOUT_SEC", 240, 30)
 # Backward compatibility: legacy single cookie env is still accepted.
 YTDLP_COOKIEFILE_LEGACY = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_COOKIEFILE = (os.getenv("YTDLP_YOUTUBE_COOKIEFILE") or "").strip()
@@ -157,6 +159,36 @@ def _summarize_err_text(message: str, max_len: int = 240) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len] + "...(truncated)"
+
+
+def _elapsed_sec(start_ts: float) -> float:
+    return max(0.0, float(time.monotonic() - float(start_ts)))
+
+
+def _ensure_time_budget(start_ts: float, stage: str) -> None:
+    elapsed = _elapsed_sec(start_ts)
+    if elapsed > float(YTDLP_TOTAL_TIMEOUT_SEC):
+        raise ValueError(
+            f"{stage} 처리 시간이 제한({YTDLP_TOTAL_TIMEOUT_SEC}s)을 초과했습니다. "
+            f"(elapsed={elapsed:.1f}s)"
+        )
+
+
+def _run_yt_dlp_command(cmd: List[str], stage: str, start_ts: float) -> subprocess.CompletedProcess:
+    _ensure_time_budget(start_ts, stage=stage)
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=YTDLP_PROCESS_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        elapsed = _elapsed_sec(start_ts)
+        raise ValueError(
+            f"{stage} 실행 타임아웃({YTDLP_PROCESS_TIMEOUT_SEC}s) "
+            f"(elapsed={elapsed:.1f}s)"
+        ) from exc
 
 def _validate_source_url(source_url: str) -> str:
     s = (source_url or "").strip()
@@ -743,6 +775,7 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
     yt-dlp CLI로 YouTube URL을 local_path 위치로 다운로드한다.
     yt-dlp는 실제 확장자가 달라질 수 있으므로 템플릿으로 받은 뒤 local_path로 통일한다.
     """
+    started_at = time.monotonic()
     normalized_source_url = str(source_url or "").strip()
     if _is_youtube_shorts_url(normalized_source_url):
         video_id = _extract_youtube_video_id(normalized_source_url)
@@ -841,11 +874,7 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
             f"idx={idx}/{len(cookie_candidates)} use_cookie={bool(cookiefile)} format={primary_format}"
         )
 
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-        )
+        proc = _run_yt_dlp_command(cmd, stage="youtube-cli:primary", start_ts=started_at)
         if proc.returncode == 0:
             selected = _pick_latest_non_image_download(p)
             if selected is not None:
@@ -899,11 +928,7 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
                     f"extractor_args={'yes' if extractor_args else 'no'} fmt={fmt or 'none'}"
                 )
 
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                )
+                proc = _run_yt_dlp_command(cmd, stage="youtube-cli:fallback", start_ts=started_at)
                 if proc.returncode == 0:
                     selected = _pick_latest_non_image_download(p)
                     if selected is None:
@@ -954,10 +979,19 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
 
     if saw_login_error:
         _debug_log("youtube-cli:stop login_or_rate_limit_detected")
+        logger.warning(
+            "youtube-download stop login_or_rate_limit elapsed=%.1fs",
+            _elapsed_sec(started_at),
+        )
         raise ValueError(_login_or_rate_limit_detail(source_url))
     _debug_log(
         "youtube-cli:stop failed "
         f"last_error={_summarize_err_text(last_error or primary_last_error or 'unknown error')}"
+    )
+    logger.warning(
+        "youtube-download failed elapsed=%.1fs err=%s",
+        _elapsed_sec(started_at),
+        _summarize_err_text(last_error or primary_last_error or "unknown error"),
     )
     raise ValueError(f"yt-dlp CLI 실패: {last_error or primary_last_error or 'unknown error'}")
 
@@ -1472,6 +1506,7 @@ def _download_by_entry_format_urls(
 def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> DownloadedMedia:
     YoutubeDL = _load_yt_dlp_cls()
     treat_as_youtube = _is_youtube_url(source_url)
+    started_at = time.monotonic()
     _debug_log(
         f"ytdlp-api:start source_group={source_group} treat_as_youtube={treat_as_youtube} "
         f"source={source_url}"
@@ -1519,6 +1554,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
         attempt_count = 0
         for variant_opts in option_variants:
             for fmt in format_candidates:
+                _ensure_time_budget(started_at, stage="ytdlp-api")
                 if treat_as_youtube:
                     attempt_count += 1
                     if attempt_count > YTDLP_YOUTUBE_API_MAX_ATTEMPTS:
@@ -1560,6 +1596,7 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
         if info is None and treat_as_youtube and not saw_login_error:
             # format expression이 전부 실패한 경우 메타데이터의 실제 스트림 URL로 한 번 더 시도
             for variant_opts in option_variants[:YTDLP_YOUTUBE_META_MAX_VARIANTS]:
+                _ensure_time_budget(started_at, stage="ytdlp-api-meta-fallback")
                 try:
                     _debug_log("ytdlp-api:meta-fallback-attempt")
                     meta_opts = dict(variant_opts)
@@ -1585,8 +1622,17 @@ def _download_with_ytdlp(source_url: str, max_bytes: int, source_group: str) -> 
         if info is None:
             if saw_login_error or _is_login_or_rate_limit_error(str(last_error or "")):
                 _debug_log("ytdlp-api:stop login_or_rate_limit_detected")
+                logger.warning(
+                    "ytdlp-api stop login_or_rate_limit elapsed=%.1fs",
+                    _elapsed_sec(started_at),
+                )
                 raise ValueError(_login_or_rate_limit_detail(source_url))
             _debug_log(f"ytdlp-api:stop failed err={_summarize_err_text(last_error)}")
+            logger.warning(
+                "ytdlp-api failed elapsed=%.1fs err=%s",
+                _elapsed_sec(started_at),
+                _summarize_err_text(last_error),
+            )
             raise ValueError(f"URL에서 미디어를 가져오지 못했습니다: {last_error}")
 
         entry = _pick_primary_entry(info)

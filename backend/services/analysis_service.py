@@ -442,6 +442,12 @@ def analyze_video_bytes(content: bytes, filename: str, model_pixel_weight: float
                 continue
 
         if len(scores) == 0:
+            logger.warning(
+                "analyze-video no-valid-frames sampled=%s failed=%s reasons=%s",
+                len(frames),
+                failed,
+                frame_failure_reasons,
+            )
             analysis_result = _build_video_face_not_detected_result(
                 sampled_frames=len(frames),
                 failed_frames=failed,

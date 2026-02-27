@@ -274,8 +274,8 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
       </div>
 
       {result?.videoMeta && (
-        <div className="mt-8 relative border border-slate-200 rounded-lg p-4 bg-slate-50 text-xs text-slate-600 flex-shrink-0">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pr-16 sm:pr-20">
+        <div className="mt-8 border border-slate-200 rounded-lg p-4 bg-slate-50 text-xs text-slate-600 flex-shrink-0">
+          <div className="grid grid-cols-2 gap-3">
             <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
               <div className="text-[11px] text-slate-400 font-semibold mb-1">전체 샘플링 프레임</div>
               <div className="text-sm font-semibold text-slate-700">{resolvedTotalFrames ?? "-"} frames</div>
@@ -294,31 +294,33 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
             </div>
           </div>
 
-          <div className="absolute right-4 bottom-3 group">
-            <button
-              type="button"
-              className="text-xs font-medium text-slate-400 hover:text-slate-500 transition-colors"
-            >
-              가이드
-            </button>
-            <div
-              className="absolute right-0 bottom-6 z-20 overflow-x-auto rounded-lg border border-slate-200 bg-white p-4 shadow-xl opacity-0 invisible transition-all duration-150 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible"
-              style={{ width: "max-content", maxWidth: "calc(100vw - 24px)" }}
-            >
-              <div className="min-w-max">
-                <div className="text-sm font-semibold text-slate-900 mb-3">샘플링 가이드</div>
-                <div className="space-y-2">
-                  <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
-                    전체 샘플링 프레임: 영상에서 샘플링 대상으로 선택된 총 프레임 수입니다.
-                  </div>
-                  <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
-                    선택 샘플링 프레임: 얼굴 검출/추론이 정상 수행된 프레임 수입니다.
-                  </div>
-                  <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
-                    실패 샘플링 프레임: 디코딩·얼굴 미탐지 등으로 추론에서 제외된 프레임 수입니다.
-                  </div>
-                  <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
-                    샘플링 방식: 영상 길이와 프레임 수를 기준으로 균등하게 프레임을 고르는 규칙입니다.
+          <div className="mt-3 flex justify-end">
+            <div className="relative group">
+              <button
+                type="button"
+                className="text-xs font-medium text-slate-400 hover:text-slate-500 transition-colors"
+              >
+                가이드
+              </button>
+              <div
+                className="absolute right-0 bottom-full mb-2 z-20 overflow-x-auto rounded-lg border border-slate-200 bg-white p-4 shadow-xl opacity-0 invisible transition-all duration-150 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible"
+                style={{ width: "max-content", maxWidth: "calc(100vw - 24px)" }}
+              >
+                <div className="min-w-max">
+                  <div className="text-sm font-semibold text-slate-900 mb-3">샘플링 가이드</div>
+                  <div className="space-y-2">
+                    <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
+                      전체 샘플링 프레임: 영상에서 샘플링 대상으로 선택된 총 프레임 수입니다.
+                    </div>
+                    <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
+                      선택 샘플링 프레임: 얼굴 검출/추론이 정상 수행된 프레임 수입니다.
+                    </div>
+                    <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
+                      실패 샘플링 프레임: 디코딩·얼굴 미탐지 등으로 추론에서 제외된 프레임 수입니다.
+                    </div>
+                    <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
+                      샘플링 방식: 영상 길이와 프레임 수를 기준으로 균등하게 프레임을 고르는 규칙입니다.
+                    </div>
                   </div>
                 </div>
               </div>

@@ -2,7 +2,6 @@ import os
 import secrets
 import tempfile
 import uuid
-import base64
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,10 +15,36 @@ from .redis_client import redis_db
 from .evidence import (
     build_evidence_for_face,
 )
+from .analysis_config import (
+    AGG_MODE_VIDEO,
+    CACHE_TTL_SEC,
+    REAL_MEAN,
+    REAL_STD,
+    RESULT_TTL_SEC,
+    TOPK,
+    VIDEO_AGG_MODE_LABEL,
+    VIDEO_FRAMES_PER_MINUTE,
+    VIDEO_MAX_FRAMES_CAP,
+    VIDEO_MAX_SIDE,
+    VIDEO_MIN_FRAMES,
+    VIDEO_TRIM_HIGH_RATIO,
+    VIDEO_TRIM_LOW_RATIO,
+)
+from .analysis_utils import (
+    build_video_face_not_detected_result as _build_video_face_not_detected_result,
+    fake_prob_to_real_percent as _fake_prob_to_real_percent,
+    model_weighted_confidence as _model_weighted_confidence,
+    normalize_pixel_weight as _normalize_pixel_weight,
+    safe_score_agg as _safe_score_agg,
+    validate_evidence_level as _validate_evidence_level,
+)
 from .explain import (
     explain_from_evidence,
     generate_video_ai_comment,
     sanitize_ai_comment,
+)
+from .media_preview import (
+    build_source_preview_from_downloaded as _build_source_preview_from_downloaded,
 )
 from .inference import (
     GradCAM,
@@ -42,28 +67,6 @@ from .video_utils import (
 )
 
 logger = get_logger(__name__)
-
-
-# --- Configuration ---
-REAL_MEAN = 15.0
-REAL_STD = 8.0
-
-# Video sampling
-VIDEO_MAX_SIDE = 640
-VIDEO_MIN_FRAMES = 12
-VIDEO_MAX_FRAMES_CAP = 48
-VIDEO_FRAMES_PER_MINUTE = 24
-
-# Aggregation
-AGG_MODE_VIDEO = "mean"
-TOPK = 5
-VIDEO_TRIM_LOW_RATIO = 0.10
-VIDEO_TRIM_HIGH_RATIO = 0.30
-VIDEO_AGG_MODE_LABEL = "Trimmed Mean (Low 10 Percent, High 30 Percent)"
-
-# Redis TTL
-RESULT_TTL_SEC = 3600
-CACHE_TTL_SEC = 24 * 3600
 
 
 # =========================
@@ -121,175 +124,6 @@ def get_result_by_token(token: str) -> dict:
     if data is None:
         raise HTTPException(status_code=404, detail="결과를 찾을 수 없습니다.")
     return data
-
-
-def _validate_evidence_level(level: str) -> str:
-    lv = (level or "mvp").strip().lower()
-    if lv not in {"off", "mvp", "full"}:
-        raise HTTPException(status_code=400, detail="evidence_level은 off/mvp/full 중 하나여야 합니다.")
-    return lv
-
-
-def _safe_score_agg(values):
-    return float(max(values)) if values else 0.0
-
-
-def _fake_prob_to_real_percent(p_fake: float) -> float:
-    p = float(p_fake)
-    if p < 0.0:
-        p = 0.0
-    if p > 1.0:
-        p = 1.0
-    return float((1.0 - p) * 100.0)
-
-
-def _normalize_pixel_weight(pixel_weight: float) -> float:
-    w = float(pixel_weight)
-    if w < 0.0:
-        w = 0.0
-    if w > 1.0:
-        w = 1.0
-    return w
-
-
-def _model_weighted_confidence(pixel_real: float, freq_real: float, pixel_weight: float) -> float:
-    # model.py의 앙상블 방식과 동일하게 계산한다.
-    w = _normalize_pixel_weight(pixel_weight)
-    return float((float(pixel_real) * w) + (float(freq_real) * (1.0 - w)))
-
-
-def _build_source_preview(source_url: str, media_type: str) -> dict:
-    kind = "video" if str(media_type).lower() == "video" else "image"
-    return {
-        "kind": kind,
-        "url": source_url,
-        "page_url": source_url,
-        "pageUrl": source_url,
-    }
-
-
-def _to_data_url_jpeg(image_bgr: np.ndarray, quality: int = 88) -> str:
-    ok, buf = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
-    if not ok:
-        raise ValueError("미리보기 JPEG 인코딩 실패")
-    return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
-
-
-def _resize_keep_ratio(image_bgr: np.ndarray, max_side: int = 720) -> np.ndarray:
-    h, w = image_bgr.shape[:2]
-    longest = max(h, w)
-    if longest <= max_side:
-        return image_bgr
-    scale = float(max_side) / float(longest)
-    new_w = max(1, int(w * scale))
-    new_h = max(1, int(h * scale))
-    return cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-
-def _image_preview_from_bytes(content: bytes) -> str | None:
-    try:
-        arr = np.frombuffer(content, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
-            return None
-        img = _resize_keep_ratio(img, max_side=720)
-        return _to_data_url_jpeg(img, quality=88)
-    except Exception:
-        return None
-
-
-def _video_thumbnail_from_bytes(content: bytes, filename: str) -> str | None:
-    suffix = os.path.splitext(filename or "")[1] or ".mp4"
-    tmp_path = None
-    cap = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp_path = tmp.name
-            tmp.write(content)
-
-        cap = cv2.VideoCapture(tmp_path)
-        if not cap.isOpened():
-            return None
-
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        if frame_count > 1:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count // 2)
-
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame = cap.read()
-        if not ok or frame is None:
-            return None
-
-        frame = _resize_keep_ratio(frame, max_side=720)
-        return _to_data_url_jpeg(frame, quality=86)
-    except Exception:
-        return None
-    finally:
-        if cap is not None:
-            cap.release()
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-
-
-def _build_source_preview_from_downloaded(source_url: str, media_type: str, filename: str, content: bytes, title: str) -> dict:
-    preview = _build_source_preview(source_url=source_url, media_type=media_type)
-    if title:
-        preview["title"] = title
-
-    if str(media_type).lower() == "image":
-        data_url = _image_preview_from_bytes(content)
-        if data_url:
-            preview["data_url"] = data_url
-    elif str(media_type).lower() == "video":
-        thumb = _video_thumbnail_from_bytes(content=content, filename=filename)
-        if thumb:
-            preview["thumbnail_data_url"] = thumb
-
-    return preview
-
-
-def _build_video_face_not_detected_result(
-    sampled_frames: int,
-    failed_frames: int,
-    sampling_meta: dict | None = None,
-    frame_failure_reasons: Dict[str, int] | None = None,
-) -> dict:
-    result = {
-        "confidence": None,
-        "pixel_score": None,
-        "freq_score": None,
-        "is_fake": None,
-        "p_value": None,
-        "reliability": "",
-        "video_representative_confidence": None,
-        "video_frame_confidences": [],
-        "video_frame_pixel_scores": [],
-        "video_frame_freq_scores": [],
-            "video_meta": {
-                "sampled_frames": int(sampled_frames),
-                "used_frames": 0,
-                "failed_frames": int(failed_frames),
-                "agg_mode": VIDEO_AGG_MODE_LABEL,
-                "pixel_freq_agg_mode": AGG_MODE_VIDEO,
-                "topk": TOPK,
-            },
-        "ai_comment": "얼굴이 감지되지 않아 추론을 완료하지 못했습니다. 다른 구도/해상도의 영상을 사용해 다시 시도해 주세요.",
-        "ai_comment_source": "rule_based",
-        "input_media_type": "video",
-        "inference_failed": True,
-        "failure_reason": "face_not_detected",
-    }
-    if isinstance(sampling_meta, dict):
-        result["video_meta"].update(sampling_meta)
-    if isinstance(frame_failure_reasons, dict) and frame_failure_reasons:
-        result["video_meta"]["frame_failure_reasons"] = dict(frame_failure_reasons)
-    return result
-
 
 def _extract_gradcam_overlay_url(rep_payload: Dict[str, Any]) -> str:
     if not isinstance(rep_payload, dict):

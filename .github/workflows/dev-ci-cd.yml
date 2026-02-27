@@ -89,7 +89,6 @@ jobs:
           cache-to: type=gha,mode=min,scope=backend-dev
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-            SOCIAL_DEPS_REFRESH=${{ github.run_id }}
           tags: |
             ${{ env.BACKEND_IMAGE }}:dev-latest
             ${{ env.BACKEND_IMAGE }}:dev-${{ github.sha }}

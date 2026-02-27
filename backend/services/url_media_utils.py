@@ -794,40 +794,35 @@ def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> Downloa
         proc: Optional[subprocess.CompletedProcess] = None
 
         for cli_prefix in _yt_dlp_cli_prefix_candidates():
-            cmd_parts: List[str] = [
-                "NODE_PATH=\"$(command -v node || command -v nodejs)\"",
-                "if [ -z \"$NODE_PATH\" ]; then echo \"node runtime not found\" >&2; exit 127; fi",
+            yt_cmd_parts: List[str] = [
                 cli_prefix,
-                "--no-playlist",
-                "--no-part",
-                "--socket-timeout",
-                str(URL_MEDIA_TIMEOUT_SEC),
-                "--max-filesize",
-                str(max_bytes),
-                "--retries",
-                "2",
-                "--fragment-retries",
-                "2",
-                "--restrict-filenames",
+                "-vU",
                 "--cookies",
                 shlex.quote(cookiefile),
                 "--js-runtimes",
                 "\"node:$NODE_PATH\"",
             ]
             if YTDLP_YOUTUBE_REMOTE_COMPONENTS:
-                cmd_parts.extend(["--remote-components", shlex.quote(YTDLP_YOUTUBE_REMOTE_COMPONENTS)])
+                yt_cmd_parts.extend(["--remote-components", shlex.quote(YTDLP_YOUTUBE_REMOTE_COMPONENTS)])
             if YTDLP_YOUTUBE_FORMAT:
-                cmd_parts.extend(["-f", shlex.quote(YTDLP_YOUTUBE_FORMAT)])
+                yt_cmd_parts.extend(["-f", shlex.quote(YTDLP_YOUTUBE_FORMAT)])
             if YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT:
-                cmd_parts.extend(["--merge-output-format", shlex.quote(YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT)])
-            cmd_parts.extend(
+                yt_cmd_parts.extend(["--merge-output-format", shlex.quote(YTDLP_YOUTUBE_MERGE_OUTPUT_FORMAT)])
+            # 서비스 내부 임시 경로에 저장해 추론 파이프라인으로 전달한다.
+            yt_cmd_parts.extend(
                 [
                     "-o",
                     shlex.quote(str(out_base) + ".%(ext)s"),
                     shlex.quote(normalized_source_url),
                 ]
             )
-            shell_cmd = " ".join(cmd_parts)
+
+            yt_cmd = " ".join(yt_cmd_parts)
+            shell_cmd = (
+                "NODE_PATH=\"$(command -v node || command -v nodejs)\"; "
+                "if [ -z \"$NODE_PATH\" ]; then echo \"node runtime not found\" >&2; exit 127; fi; "
+                + yt_cmd
+            )
             _debug_log(
                 "youtube-cli:run "
                 f"url={normalized_source_url} cookie={bool(cookiefile)} "

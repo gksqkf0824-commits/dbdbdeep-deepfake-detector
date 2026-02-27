@@ -167,7 +167,8 @@ def _run_yt_dlp_shell_command(command: str, stage: str, start_ts: float) -> subp
     _ensure_time_budget(start_ts, stage=stage)
     try:
         return subprocess.run(
-            ["sh", "-lc", command],
+            # login shell(-l)은 PATH를 덮어써 구버전 yt-dlp를 잡을 수 있어 -c만 사용한다.
+            ["sh", "-c", command],
             capture_output=True,
             text=True,
             timeout=YTDLP_PROCESS_TIMEOUT_SEC,

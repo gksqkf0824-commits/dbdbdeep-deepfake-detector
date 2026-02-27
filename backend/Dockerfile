@@ -27,6 +27,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       torch torchvision --index-url https://download.pytorch.org/whl/cu118 \
  && uv pip install --python "${VENV_PATH}/bin/python" -r /w/requirements.txt
 
+# URL 추출 도구는 캐시에 오래 묶이면 구버전이 남을 수 있어 별도 레이어에서 최신화한다.
+ARG URL_FETCH_TOOLS_REFRESH=0
+RUN --mount=type=cache,target=/root/.cache/uv \
+    echo "URL_FETCH_TOOLS_REFRESH=${URL_FETCH_TOOLS_REFRESH}" \
+ && uv pip install --python "${VENV_PATH}/bin/python" --upgrade "yt-dlp[default]" instaloader
+
 
 # -------- 2) runtime stage --------
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04

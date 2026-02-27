@@ -42,11 +42,18 @@ const summarizeSeries = (values) => {
   return { start, mid, end, swing, trend };
 };
 
+const stabilizeInlineRatios = (text) =>
+  String(text || "")
+    // "저주파 99.5%"처럼 대역명과 수치가 다른 줄로 갈라지지 않게 고정한다.
+    .replace(/(저주파|중주파|고주파)\s+([0-9]+(?:\.[0-9]+)?%)/g, "$1\u00A0$2")
+    // 영문 표기도 동일하게 붙여서 표시한다. (예: fake 26.8%)
+    .replace(/\b(fake|real)\s+([0-9]+(?:\.[0-9]+)?%)/gi, "$1\u00A0$2");
+
 const compactFinding = (item) => {
   const claim = String(item?.claim || "").trim();
   const evidence = String(item?.evidence || "").trim();
-  if (claim && evidence) return `${claim} (${evidence})`;
-  return claim || evidence;
+  if (claim && evidence) return stabilizeInlineRatios(`${claim} (${evidence})`);
+  return stabilizeInlineRatios(claim || evidence);
 };
 
 const INTERPRETATION_GUIDE_ITEMS = [

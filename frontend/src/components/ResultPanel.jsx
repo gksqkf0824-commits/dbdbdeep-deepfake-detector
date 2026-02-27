@@ -133,6 +133,32 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
       ? (usedFrames || 0) + (failedFrames || 0)
       : null;
   const samplingModeLabel = formatSamplingModeLabel(videoMeta?.sampling);
+  const samplingCards = [
+    {
+      key: "total",
+      label: "전체 샘플링 프레임",
+      value: resolvedTotalFrames !== null ? `${resolvedTotalFrames} frames` : "-",
+      valueClassName: "text-2xl sm:text-3xl leading-none",
+    },
+    {
+      key: "used",
+      label: "선택 샘플링 프레임",
+      value: usedFrames !== null ? `${usedFrames} frames` : "-",
+      valueClassName: "text-2xl sm:text-3xl leading-none",
+    },
+    {
+      key: "failed",
+      label: "실패 샘플링 프레임",
+      value: failedFrames !== null ? `${failedFrames} frames` : "-",
+      valueClassName: "text-2xl sm:text-3xl leading-none",
+    },
+    {
+      key: "mode",
+      label: "샘플링 방식",
+      value: samplingModeLabel,
+      valueClassName: "text-base sm:text-lg leading-snug",
+    },
+  ];
 
   const timelineRaw = Array.isArray(result?.timeline) ? result.timeline : [];
   const timeline = timelineRaw
@@ -196,10 +222,8 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
           <div>
             <div className="font-semibold text-slate-900 mb-2 text-xl">AI 판별 결과</div>
             <div className={`text-6xl sm:text-7xl font-bold tracking-tight ${isUndetermined ? "text-red-600" : "text-blue-600"}`}>
-              <div className={`text-6xl sm:text-7xl font-bold tracking-tight ${isUndetermined ? "text-red-600" : "text-blue-600"}`}>
               {isUndetermined ? "추론 실패" 
                 : (trust !== null ? `${Number(trust).toFixed(1)}%` : "--%")}
-            </div>
             </div>
             <div className="text-lg text-slate-500 mt-3 font-medium">
               {result ? (isUndetermined ? "얼굴 미탐지" : "분석 완료") : "분석 결과 대기"}
@@ -274,57 +298,45 @@ export default function ResultPanel({ progress, result, error, faceImageUrl, fil
       </div>
 
       {result?.videoMeta && (
-        <div className="mt-8 border border-slate-200 rounded-lg p-4 bg-slate-50 text-xs text-slate-600 flex-shrink-0">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-              <div className="text-[11px] text-slate-400 font-semibold mb-1">전체 샘플링 프레임</div>
-              <div className="text-sm font-semibold text-slate-700">{resolvedTotalFrames ?? "-"} frames</div>
-            </div>
-            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-              <div className="text-[11px] text-slate-400 font-semibold mb-1">선택 샘플링 프레임</div>
-              <div className="text-sm font-semibold text-slate-700">{usedFrames ?? "-"} frames</div>
-            </div>
-            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-              <div className="text-[11px] text-slate-400 font-semibold mb-1">실패 샘플링 프레임</div>
-              <div className="text-sm font-semibold text-slate-700">{failedFrames ?? "-"} frames</div>
-            </div>
-            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-              <div className="text-[11px] text-slate-400 font-semibold mb-1">샘플링 방식</div>
-              <div className="text-sm font-semibold text-slate-700">{samplingModeLabel}</div>
-            </div>
-          </div>
-
-          <div className="mt-3 flex justify-end">
+        <div className="mt-8 rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50 to-white p-4 sm:p-5 shadow-sm flex-shrink-0">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-900">샘플링 요약</div>
             <div className="relative group">
               <button
                 type="button"
-                className="text-xs font-medium text-slate-400 hover:text-slate-500 transition-colors"
+                className="inline-flex items-center rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-slate-50 transition-colors"
               >
                 가이드
               </button>
               <div
-                className="absolute right-0 bottom-full mb-2 z-20 overflow-x-auto rounded-lg border border-slate-200 bg-white p-4 shadow-xl opacity-0 invisible transition-all duration-150 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible"
-                style={{ width: "max-content", maxWidth: "calc(100vw - 24px)" }}
+                className="absolute right-0 top-full mt-2 z-20 w-[320px] max-w-[calc(100vw-24px)] rounded-lg border border-slate-200 bg-white p-4 shadow-xl opacity-0 invisible transition-all duration-150 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible"
               >
-                <div className="min-w-max">
-                  <div className="text-sm font-semibold text-slate-900 mb-3">샘플링 가이드</div>
-                  <div className="space-y-2">
-                    <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
-                      전체 샘플링 프레임: 영상에서 샘플링 대상으로 선택된 총 프레임 수입니다.
-                    </div>
-                    <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
-                      선택 샘플링 프레임: 얼굴 검출/추론이 정상 수행된 프레임 수입니다.
-                    </div>
-                    <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
-                      실패 샘플링 프레임: 디코딩·얼굴 미탐지 등으로 추론에서 제외된 프레임 수입니다.
-                    </div>
-                    <div className="text-xs text-slate-600 leading-relaxed whitespace-nowrap">
-                      샘플링 방식: 영상 길이와 프레임 수를 기준으로 균등하게 프레임을 고르는 규칙입니다.
-                    </div>
+                <div className="text-sm font-semibold text-slate-900 mb-3">샘플링 가이드</div>
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-600 leading-relaxed">
+                    전체 샘플링 프레임: 영상에서 샘플링 대상으로 선택된 총 프레임 수입니다.
+                  </div>
+                  <div className="text-xs text-slate-600 leading-relaxed">
+                    선택 샘플링 프레임: 얼굴 검출/추론이 정상 수행된 프레임 수입니다.
+                  </div>
+                  <div className="text-xs text-slate-600 leading-relaxed">
+                    실패 샘플링 프레임: 디코딩·얼굴 미탐지 등으로 추론에서 제외된 프레임 수입니다.
+                  </div>
+                  <div className="text-xs text-slate-600 leading-relaxed">
+                    샘플링 방식: 영상 길이와 프레임 수를 기준으로 균등하게 프레임을 고르는 규칙입니다.
                   </div>
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            {samplingCards.map((item) => (
+              <div key={item.key} className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+                <div className="text-xs text-slate-400 font-semibold mb-2">{item.label}</div>
+                <div className={`font-bold text-slate-700 ${item.valueClassName}`}>{item.value}</div>
+              </div>
+            ))}
           </div>
         </div>
       )}

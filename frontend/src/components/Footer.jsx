@@ -35,7 +35,7 @@ export default function Footer() {
               {/* 실제 깃허브 주소로 변경해서 사용하세요. 새 창에서 열리도록 target="_blank" 적용 */}
               <li><a href="https://github.com/gksqkf0824-commits/multimodal-face-auth-security/blob/main/model.py" target="_blank" rel="noopener noreferrer" className="hover:text-[#3182f6] transition">AI Model</a></li>
               <li><a href="https://github.com/gksqkf0824-commits/multimodal-face-auth-security/blob/main/main.py" target="_blank" rel="noopener noreferrer" className="hover:text-[#3182f6] transition">Backend</a></li>
-              <li><a href="https://github.com/사용자아이디/frontend-repo" target="_blank" rel="noopener noreferrer" className="hover:text-[#3182f6] transition">Frontend</a></li>
+              <li><a href="https://github.com/gksqkf0824-commits/dbdbdeep-deepfake-detector/tree/main/frontend" target="_blank" rel="noopener noreferrer" className="hover:text-[#3182f6] transition">Frontend</a></li>
             </ul>
           </div>
         </div>

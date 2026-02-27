@@ -31,6 +31,7 @@ _HTTP_USER_AGENT = (
 )
 
 logger = get_logger(__name__)
+_YTDLP_HELP_TEXT_CACHE: Optional[str] = None
 
 
 class _SilentYTDLPLogger:
@@ -578,6 +579,21 @@ def _prepare_writable_cookiefile(tmp_dir: str, source_group: str) -> str:
 
 
 def _detect_node_runtime_path() -> str:
+    # 쉘에서의 `$(command -v node)`와 동일한 방식으로 우선 탐지한다.
+    try:
+        proc = subprocess.run(
+            ["sh", "-lc", "command -v node || command -v nodejs"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        detected = str(proc.stdout or "").strip()
+        if detected:
+            return detected
+    except Exception:
+        pass
+
+    # 쉘 탐지 실패 시 python 경로 탐지로 한 번 더 보완한다.
     node_path = shutil.which("node")
     if node_path:
         return node_path
@@ -729,6 +745,31 @@ def _apply_js_runtime_option(opts: Dict[str, Any]) -> None:
         opts["js_runtimes"] = YTDLP_JS_RUNTIMES
 
 
+def _yt_dlp_cli_help_text() -> str:
+    global _YTDLP_HELP_TEXT_CACHE
+    if _YTDLP_HELP_TEXT_CACHE is not None:
+        return _YTDLP_HELP_TEXT_CACHE
+    try:
+        proc = subprocess.run(
+            ["yt-dlp", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    except Exception:
+        text = ""
+    _YTDLP_HELP_TEXT_CACHE = text.lower()
+    return _YTDLP_HELP_TEXT_CACHE
+
+
+def _yt_dlp_cli_supports_option(option_name: str) -> bool:
+    opt = str(option_name or "").strip().lower()
+    if not opt:
+        return False
+    return opt in _yt_dlp_cli_help_text()
+
+
 def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> DownloadedMedia:
     started_at = time.monotonic()
     normalized_source_url = _normalize_youtube_watch_url(source_url)
@@ -752,11 +793,24 @@ def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> Downloa
             "--fragment-retries",
             "2",
             "--restrict-filenames",
-            "--js-runtimes",
-            _build_cli_js_runtimes_value(),
         ]
+        runtime_value = _build_cli_js_runtimes_value()
+        if _yt_dlp_cli_supports_option("--js-runtimes"):
+            cmd += ["--js-runtimes", runtime_value]
+        else:
+            logger.warning(
+                "yt-dlp CLI가 --js-runtimes 옵션을 지원하지 않습니다. "
+                "구버전일 수 있으니 최신 버전으로 업데이트를 권장합니다."
+            )
+
         if YTDLP_YOUTUBE_REMOTE_COMPONENTS:
-            cmd += ["--remote-components", YTDLP_YOUTUBE_REMOTE_COMPONENTS]
+            if _yt_dlp_cli_supports_option("--remote-components"):
+                cmd += ["--remote-components", YTDLP_YOUTUBE_REMOTE_COMPONENTS]
+            else:
+                logger.warning(
+                    "yt-dlp CLI가 --remote-components 옵션을 지원하지 않습니다. "
+                    "구버전일 수 있으니 최신 버전으로 업데이트를 권장합니다."
+                )
 
         cookiefile = ""
         try:
@@ -780,11 +834,17 @@ def _download_youtube_with_ytdlp_cli(source_url: str, max_bytes: int) -> Downloa
         _debug_log(
             "youtube-cli:run "
             f"url={normalized_source_url} cookie={bool(cookiefile)} "
-            f"runtime={_build_cli_js_runtimes_value()} format={YTDLP_YOUTUBE_FORMAT}"
+            f"runtime={runtime_value} format={YTDLP_YOUTUBE_FORMAT}"
         )
         proc = _run_yt_dlp_command(cmd, stage="youtube-cli", start_ts=started_at)
         if proc.returncode != 0:
             err_text = (proc.stderr or proc.stdout or "").strip()
+            low = err_text.lower()
+            if "no such option: --js-runtimes" in low or "no such option: --remote-components" in low:
+                raise ValueError(
+                    "현재 서버의 yt-dlp CLI가 필요한 옵션(--js-runtimes/--remote-components)을 지원하지 않습니다. "
+                    "컨테이너의 yt-dlp를 최신 버전으로 업데이트해 주세요."
+                )
             raise ValueError(f"yt-dlp CLI 실패: {err_text or 'unknown error'}")
 
         file_path = _pick_latest_video_download(out_base)

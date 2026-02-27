@@ -1,6 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 
+from log_config import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger(__name__)
+
 from model import detector
 from services.analysis_service import (
     analyze_evidence_bytes,
@@ -38,7 +43,7 @@ def _assert_models_loaded() -> None:
         )
 
     device = str(getattr(detector, "device", "unknown"))
-    print(f"✅ 모델 로드 성공! device={device}, pixel=ready, frequency=ready")
+    logger.info("모델 로드 성공 device=%s pixel=ready frequency=ready", device)
 
 
 def _require_model_ready() -> None:
@@ -58,16 +63,22 @@ def check_redis_connection():
     except Exception as e:
         MODEL_READY = False
         MODEL_STATUS_DETAIL = str(e)
-        print(f"❌ 모델 초기화 실패: {e}")
-        print("   👉 서비스는 기동되지만 분석 API는 503을 반환합니다.")
+        logger.exception("모델 초기화 실패: %s", e)
+        logger.warning("서비스는 기동되지만 분석 API는 503을 반환합니다.")
 
     try:
         ping_redis()
-        print("✅ Redis 연결 성공! (준비 완료)")
-        print(f"🔧 MODEL_PIXEL_WEIGHT={MODEL_PIXEL_WEIGHT:.2f}, MODEL_FREQ_WEIGHT={(1.0 - MODEL_PIXEL_WEIGHT):.2f}")
+        logger.info("Redis 연결 성공 (준비 완료)")
+        logger.info(
+            "MODEL_PIXEL_WEIGHT=%.2f MODEL_FREQ_WEIGHT=%.2f",
+            MODEL_PIXEL_WEIGHT,
+            (1.0 - MODEL_PIXEL_WEIGHT),
+        )
     except Exception as e:
-        print(f"❌ Redis 연결 실패: {e}")
-        print("   👉 Docker가 켜져 있는지, 'docker run -p 6379:6379 -d redis'를 했는지 확인하세요! (서비스는 기동 유지)")
+        logger.exception("Redis 연결 실패: %s", e)
+        logger.warning(
+            "Docker/Redis 상태를 확인하세요. 서비스는 기동 유지됩니다."
+        )
 
 
 app.add_middleware(
@@ -134,6 +145,12 @@ async def analyze_url(
 ):
     _require_model_ready()
     target_url = (source_url or image_url or "").strip()
+    logger.info(
+        "api:/analyze-url source_url=%r image_url=%r target_url=%r",
+        source_url,
+        image_url,
+        target_url,
+    )
     if not target_url:
         raise HTTPException(status_code=400, detail="URL을 입력해 주세요. (source_url 또는 image_url)")
 

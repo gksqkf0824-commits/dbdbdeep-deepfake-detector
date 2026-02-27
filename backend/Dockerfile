@@ -35,6 +35,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     VENV_PATH=/opt/venv \
+    APP_LOG_LEVEL=INFO \
+    APP_LOG_FILE=/app/logs/backend.log \
+    APP_LOG_MAX_BYTES=10485760 \
+    APP_LOG_BACKUP_COUNT=5 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}"
 ARG NODE_VERSION=20.19.0
@@ -63,6 +67,7 @@ COPY --from=build "${VENV_PATH}" "${VENV_PATH}"
 
 # 앱 코드 복사
 COPY . /app
+RUN mkdir -p /app/logs
 
 EXPOSE 8000
 CMD ["python3", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

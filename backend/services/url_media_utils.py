@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
+from log_config import get_logger
+
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "bmp", "gif"}
 _VIDEO_EXTS = {"mp4", "mov", "avi", "mkv", "webm", "m4v", "3gp", "ts"}
 _HTTP_USER_AGENT = (
@@ -29,22 +31,24 @@ _HTTP_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 
+logger = get_logger(__name__)
+
 
 class _SilentYTDLPLogger:
     def debug(self, msg: str) -> None:
         raw = (os.getenv("URL_MEDIA_DEBUG") or "").strip().lower()
         if raw in {"1", "true", "yes", "on", "y"}:
-            print(f"[url-media][yt-dlp][debug] {msg}", flush=True)
+            logger.debug("[url-media][yt-dlp][debug] %s", msg)
 
     def warning(self, msg: str) -> None:
         raw = (os.getenv("URL_MEDIA_DEBUG") or "").strip().lower()
         if raw in {"1", "true", "yes", "on", "y"}:
-            print(f"[url-media][yt-dlp][warn] {msg}", flush=True)
+            logger.warning("[url-media][yt-dlp][warn] %s", msg)
 
     def error(self, msg: str) -> None:
         raw = (os.getenv("URL_MEDIA_DEBUG") or "").strip().lower()
         if raw in {"1", "true", "yes", "on", "y"}:
-            print(f"[url-media][yt-dlp][error] {msg}", flush=True)
+            logger.error("[url-media][yt-dlp][error] %s", msg)
 
 
 # =========================
@@ -92,6 +96,8 @@ URL_MEDIA_DEBUG = _env_bool("URL_MEDIA_DEBUG", False)
 YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS = _env_int("YTDLP_YOUTUBE_CLI_MAX_ATTEMPTS", 12, 1)
 YTDLP_YOUTUBE_API_MAX_ATTEMPTS = _env_int("YTDLP_YOUTUBE_API_MAX_ATTEMPTS", 16, 1)
 YTDLP_YOUTUBE_META_MAX_VARIANTS = _env_int("YTDLP_YOUTUBE_META_MAX_VARIANTS", 4, 1)
+# Backward compatibility: legacy single cookie env is still accepted.
+YTDLP_COOKIEFILE_LEGACY = (os.getenv("YTDLP_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_COOKIEFILE = (os.getenv("YTDLP_YOUTUBE_COOKIEFILE") or "").strip()
 YTDLP_INSTAGRAM_COOKIEFILE = (os.getenv("YTDLP_INSTAGRAM_COOKIEFILE") or "").strip()
 YTDLP_YOUTUBE_CLIENTS = _env_csv("YTDLP_YOUTUBE_CLIENTS", "android,web")
@@ -138,7 +144,7 @@ class DownloadedMedia:
 def _debug_log(message: str) -> None:
     if not URL_MEDIA_DEBUG:
         return
-    print(f"[url-media] {message}", flush=True)
+    logger.info("[url-media] %s", message)
 
 
 def _mask_token(value: str, keep: int = 8) -> str:
@@ -824,10 +830,42 @@ def _build_cli_js_runtimes_value() -> str:
 
 def _resolve_cookiefile_for_source(source_group: str = "generic") -> str:
     group = str(source_group or "generic").strip().lower()
+    candidates: List[str] = []
+
     if group == "youtube":
-        return YTDLP_YOUTUBE_COOKIEFILE
-    if group == "instagram":
-        return YTDLP_INSTAGRAM_COOKIEFILE
+        candidates.extend(
+            [
+                YTDLP_YOUTUBE_COOKIEFILE,
+                YTDLP_COOKIEFILE_LEGACY,
+                "/run/secrets/www.youtube.com_cookies.txt",
+                "/run/secrets/youtube_cookies.txt",
+                "/run/secrets/social_cookies.txt",
+            ]
+        )
+    elif group == "instagram":
+        candidates.extend(
+            [
+                YTDLP_INSTAGRAM_COOKIEFILE,
+                YTDLP_COOKIEFILE_LEGACY,
+                "/run/secrets/www.instagram.com_cookies.txt",
+                "/run/secrets/instagram_cookies.txt",
+                "/run/secrets/social_cookies.txt",
+            ]
+        )
+    else:
+        candidates.extend([YTDLP_COOKIEFILE_LEGACY])
+
+    seen: set[str] = set()
+    for raw in candidates:
+        path = str(raw or "").strip()
+        if not path:
+            continue
+        low = path.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        if os.path.isfile(path):
+            return path
     return ""
 
 
@@ -1048,7 +1086,12 @@ def _download_youtube_to_path(source_url: str, local_path: Path, max_bytes: int)
     format_candidates = _youtube_cli_format_candidates(has_ffmpeg=has_ffmpeg)
     cookie_candidates: List[str] = []
     if _resolve_cookiefile_for_source("youtube"):
-        cookie_candidates.append(_prepare_writable_cookiefile(str(p.parent), strict=True, source_group="youtube"))
+        try:
+            prepared = _prepare_writable_cookiefile(str(p.parent), strict=False, source_group="youtube")
+            if prepared:
+                cookie_candidates.append(prepared)
+        except Exception as exc:
+            _debug_log(f"youtube-cli:cookie-prepare-fail err={_summarize_err_text(exc)}")
     cookie_candidates.append("")
     _debug_log(
         "youtube-cli:config "
@@ -1321,13 +1364,15 @@ def _apply_cookiefile_option(opts: Dict[str, Any], tmp_dir: str, source_group: s
         return
 
     if not os.path.isfile(cookie_path):
-        raise ValueError(f"{_cookiefile_env_hint(source_group)} 파일을 찾을 수 없습니다: {cookie_path}")
+        _debug_log(f"{_cookiefile_env_hint(source_group)} missing: {cookie_path}")
+        return
 
     req_cookie_path = os.path.join(tmp_dir, "yt_cookies.txt")
     try:
         shutil.copyfile(cookie_path, req_cookie_path)
     except Exception as exc:
-        raise ValueError(f"{_cookiefile_env_hint(source_group)} 복사 실패: {exc}") from exc
+        _debug_log(f"{_cookiefile_env_hint(source_group)} copy failed: {exc}")
+        return
     opts["cookiefile"] = req_cookie_path
 
 

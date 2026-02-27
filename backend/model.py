@@ -1,5 +1,6 @@
 import os
 import base64
+from log_config import get_logger
 from typing import Any, Dict, Optional
 
 import cv2
@@ -12,6 +13,8 @@ from torchvision import models, transforms
 
 # RetinaFace (InsightFace)
 from insightface.app import FaceAnalysis
+
+logger = get_logger(__name__)
 
 
 # =========================================================
@@ -153,7 +156,7 @@ class RetinaFaceCropper:
             self.app.prepare(ctx_id=ctx_id, det_size=det_size)
         except Exception as exc:
             if ctx_id == 0:
-                print(f"⚠️ RetinaFace CUDA 초기화 실패, CPU로 폴백합니다: {exc}")
+                logger.warning("RetinaFace CUDA 초기화 실패, CPU로 폴백합니다: %s", exc)
                 self.app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
                 self.app.prepare(ctx_id=-1, det_size=det_size)
             else:
@@ -214,10 +217,10 @@ class DeepfakeDetectorEnsemble:
             self.pixel_model.load_state_dict(state_dict, strict=True
             )
             self.pixel_model.to(self.device).eval()
-            print("✅ Pixel 모델 로드 완료!")
+            logger.info("Pixel 모델 로드 완료")
         else:
             self.pixel_model = None
-            print(f"⚠️ {pixel_model_path} 파일을 찾을 수 없습니다. Pixel 모델 비활성화.")
+            logger.warning("%s 파일을 찾을 수 없습니다. Pixel 모델 비활성화.", pixel_model_path)
 
         # -------------------
         # Freq Model (MultiChannelV2S, 4ch SRM+Y)
@@ -229,10 +232,10 @@ class DeepfakeDetectorEnsemble:
             state_dict = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
             self.freq_model.load_state_dict(state_dict, strict=True)
             self.freq_model.to(self.device).eval()
-            print("✅ Freq(MultiChannelV2S) 모델 로드 완료!")
+            logger.info("Freq(MultiChannelV2S) 모델 로드 완료")
         else:
             self.freq_model = None
-            print(f"⚠️ {freq_model_path} 파일을 찾을 수 없습니다. Freq 모델 비활성화.")
+            logger.warning("%s 파일을 찾을 수 없습니다. Freq 모델 비활성화.", freq_model_path)
 
     def _decode_image_bytes_to_bgr(self, image_bytes: bytes) -> np.ndarray:
         arr = np.frombuffer(image_bytes, np.uint8)

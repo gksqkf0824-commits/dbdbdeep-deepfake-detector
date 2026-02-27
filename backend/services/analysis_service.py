@@ -3,12 +3,14 @@ import secrets
 import tempfile
 import uuid
 import base64
+import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 from fastapi import HTTPException
 
+from log_config import get_logger
 from model import detector
 from .redis_client import redis_db
 from .evidence import (
@@ -38,6 +40,8 @@ from .url_media_utils import download_media_from_url
 from .video_utils import (
     video_to_uniform_sampled_frames,
 )
+
+logger = get_logger(__name__)
 
 
 # --- Configuration ---
@@ -705,11 +709,29 @@ def analyze_url_source(
     try:
         downloaded = download_media_from_url(source_url)
     except ValueError as exc:
+        logger.warning(
+            "analyze-url bad-request source_url=%r detail=%s",
+            source_url,
+            exc,
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
+        logger.error(
+            "analyze-url runtime-error source_url=%r detail=%s",
+            source_url,
+            exc,
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"URL 미디어 다운로드 실패: {exc}") from exc
+        logger.error(
+            "analyze-url unexpected-error source_url=%r detail=%s\n%s",
+            source_url,
+            exc,
+            traceback.format_exc(),
+        )
+        raise HTTPException(status_code=500, detail=f"URL 미디어 다운로드 실패: {exc}") from exc
 
     source_preview = _build_source_preview_from_downloaded(
         source_url=downloaded.source_url,
